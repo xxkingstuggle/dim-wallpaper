@@ -1,8 +1,26 @@
-# DimWallpaper
+<p align="center">
+  <img src="assets/icon.png" width="88" alt="DimWallpaper 图标" />
+</p>
 
-macOS 菜单栏小工具：深色模式下把桌面壁纸调暗，浅色模式下保持原色。
+<h1 align="center">DimWallpaper</h1>
 
-原生 Swift + AppKit，无第三方依赖，无后台守护进程，只有一个菜单栏图标。
+<p align="center">macOS 原生菜单栏工具：深色模式下自动压暗桌面壁纸，浅色模式保持原色，不改动系统壁纸文件。</p>
+
+<p align="center">
+  <a href="https://github.com/xxkingstuggle/dim-wallpaper/releases/latest"><img src="https://img.shields.io/github/v/release/xxkingstuggle/dim-wallpaper" alt="最新版本" /></a>
+  <img src="https://img.shields.io/badge/macOS-13%2B-000000?logo=apple" alt="macOS 13 及以上" />
+  <img src="https://img.shields.io/badge/Swift-AppKit-F05138?logo=swift&logoColor=white" alt="Swift + AppKit" />
+  <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="MIT License" />
+</p>
+
+<p align="center">
+  <a href="https://github.com/xxkingstuggle/dim-wallpaper/releases/latest">下载 Release (v1.0.0)</a> ·
+  <a href="https://myzjx.com/software/dim-wallpaper/">项目概览</a> ·
+  <a href="https://myzjx.com/posts/dim-wallpaper-macos-desktop-overlay/">工程手记</a> ·
+  <a href="https://github.com/xxkingstuggle/dim-wallpaper/issues">问题反馈</a>
+</p>
+
+原生 Swift + AppKit 编写，无第三方依赖，无常驻守护进程，仅驻留一个菜单栏图标。
 
 ## 原理
 
@@ -40,12 +58,19 @@ macOS 菜单栏小工具：深色模式下把桌面壁纸调暗，浅色模式�
 
 设置用 `UserDefaults` 保存在 `~/Library/Preferences/local.zjx.DimWallpaper.plist`。
 
-## 构建与安装
+## 安装与构建
+
+### 方式一：从 Releases 下载预编译包
+
+1. 前往 [GitHub Releases (v1.0.0)](https://github.com/xxkingstuggle/dim-wallpaper/releases/tag/v1.0.0) 下载 `DimWallpaper-1.0.0-macOS.zip`（可对照 `SHA256SUMS.txt` 校验）。
+2. 解压后将 `DimWallpaper.app` 移入 `~/Applications` 或 `/Applications` 并打开。
+
+### 方式二：从源码构建
 
 ```bash
-cd ~/Developer/repos/dim-wallpaper
+git clone https://github.com/xxkingstuggle/dim-wallpaper.git
+cd dim-wallpaper
 ./build.sh
-rm -rf ~/Applications/DimWallpaper.app
 cp -R dist/DimWallpaper.app ~/Applications/
 open ~/Applications/DimWallpaper.app
 ```
@@ -63,11 +88,10 @@ open ~/Applications/DimWallpaper.app
 
 ## 卸载
 
-先在菜单里取消「开机自动启动」（登录项由 `SMAppService` 托管，直接删 app 会在登录项里留下失效条目），再：
+先在菜单里取消「开机自动启动」（登录项由 `SMAppService` 托管，直接删 App 会在登录项里留下失效条目），再退出应用、将 `~/Applications/DimWallpaper.app` 移入废纸篓，并清理偏好设置：
 
 ```bash
 osascript -e 'quit app "DimWallpaper"'
-rm -rf ~/Applications/DimWallpaper.app
 defaults delete local.zjx.DimWallpaper
 ```
 
@@ -89,3 +113,7 @@ defaults delete local.zjx.DimWallpaper
 - 菜单可见、状态条目正常出现（开启前后对比截图确认）
 
 未实测：多显示器（本机只有一块屏）、通知中心覆盖、休眠唤醒后重连外接屏。这些走的是同一套窗口层级与 `didChangeScreenParametersNotification` 路径，但按「没测就不写进已验证」处理。
+
+## 开源许可
+
+采用 [MIT License](LICENSE) 开源。
