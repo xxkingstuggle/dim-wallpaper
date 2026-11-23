@@ -7,7 +7,7 @@ DIST="dist"
 APP="$DIST/$APP_NAME.app"
 ICONSET="$DIST/AppIcon.iconset"
 
-rm -rf "$DIST"
+if [[ -e "$DIST" ]]; then mv "$DIST" "$HOME/.Trash/dim-wallpaper-dist-$(date +%s)"; fi
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$ICONSET"
 
 # --- icon ---
