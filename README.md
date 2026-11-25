@@ -4,7 +4,7 @@
 
 <h1 align="center">DimWallpaper</h1>
 
-<p align="center">macOS 原生菜单栏工具：深色模式下自动压暗桌面壁纸，浅色模式保持原色，不改动系统壁纸文件。</p>
+<p align="center">macOS 原生菜单栏工具：桌面壁纸自动压暗 + 后台专注遮罩（类 HazeOver），保留前台应用高亮，支持菜单栏/Dock 独立压暗，不修改壁纸文件与显示硬件。</p>
 
 <p align="center">
   <a href="https://github.com/xxkingstuggle/dim-wallpaper/releases/latest"><img src="https://img.shields.io/github/v/release/xxkingstuggle/dim-wallpaper" alt="最新版本" /></a>
@@ -24,7 +24,10 @@
 
 ## 原理
 
-在每个显示器上铺一层**不可见交互的调光遮罩窗口**，窗口层级严格落在
+所有调暗均通过**无边框鼠标穿透 `NSWindow`** 合成实现，**不调用任何硬件 Gamma/色表/亮度修改 API，无需录屏或辅助功能权限**：
+
+### 1. 壁纸调暗层（Desktop Layer）
+在每个显示器上铺一层调光遮罩，窗口层级严格落在
 `CGWindowLevelForKey(.desktopWindow) + 1`（位于壁纸之上、严格低于 `CGWindowLevelForKey(.desktopIconWindow)` 桌面图标层）：
 
 - 应用窗口完全不受影响（不透明白窗实测：开关前后像素完全相同）
@@ -32,7 +35,15 @@
 - 不需要修改壁纸文件，也不碰 `com.apple.desktop` / wallpaper 数据库
 - 暂停或处于浅色待命时，淡出完成后自动 `orderOut` 卸载遮罩窗口，避免空闲占用 WindowServer 合成缓冲
 - 监听系统外观变化、显示器热插拔、休眠唤醒与空间切换并做短窗防抖，支持多显示器逐屏独立豁免
-- `collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]` 并开启 `canHide = false`：切 Space 或隐藏应用时不丢失覆盖
+- `collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]` 并开启 `canHide = false`：切 Space 或隐藏应用时不丢失覆盖
+
+### 2. 专注遮罩层（Focus Mode）
+独立于壁纸调暗层，将前台窗口之外的后台应用压暗以减少视觉干扰（两者可单独或叠加为「双重沉浸」使用）：
+
+- **Z 序精确锚定**：通过只读 `CGWindowListCopyWindowInfo`（跳过自进程、非标准层及微小辅助窗）并按主屏高度翻转 CG→AppKit 坐标，在「当前前台应用」模式下锚定最前连续窗口组底部，在「仅最前单窗口」模式下锚定最前单窗正下方，避免夹层窗口误亮
+- **菜单栏 / Dock 零重叠分条压暗**：默认保留菜单栏与 Dock 原色；开启「压暗顶部菜单栏」或「压暗程序坞 Dock」时，按 `screen.frame` 与 `visibleFrame` 将主遮罩与顶部菜单栏条（`statusBar + 1`，严格低于 `popUpMenu`）、底/左/右 Dock 条（`dock + 1`，严格低于 `mainMenu`）做**无重叠零死角分割**，并自动扣减伸入 Dock 区的前台窗口轮廓，避免双重压暗与遮挡下拉菜单
+- **自进程保活与按应用豁免**：打开 DimWallpaper 控制中心、Spotlight 或控制中心时维持上一外部前台应用目标，方便实时拖动滑杆预览；支持一键将当前外部应用加入豁免名单自动暂停压暗
+- **零空转回收**：关闭专注遮罩、命中豁免应用或息屏时停止轮询并将专注遮罩窗口 `orderOut` + `close` 释放
 
 > 为什么不做「生成一张调暗的图再 setDesktopImageURL」：那会把用户的壁纸换成另一份文件，
 > 系统设置里的壁纸条目会被改写，换壁纸后还得重新同步。叠加窗口方案完全不动系统状态。
@@ -43,12 +54,17 @@
 
 | 图标 | 含义 |
 |---|---|
+| ✨🌙 | 双重沉浸（壁纸调暗 + 专注遮罩同时生效） |
+| ⌖ | 仅专注遮罩生效 |
 | 🌙 | 深色模式，壁纸已调暗 |
 | ☀️ | 浅色模式（或已关闭深色限制），保持原色 |
 | 🚫 | 已暂停 |
 
-- **左键点击状态栏图标**：弹出原生毛玻璃控制中心，包含 16:10 实时桌面压暗微缩预览、5%–80% 连续滑杆、快捷场景预设（轻柔 25% / 专注 45% / 深夜 65% / 极暗 80%）、色温滤镜（中性黑 / 暖夜 / 深蓝夜）、深色模式联动、逐显示器独立开关、零权限全局切换快捷键（`⌥⌘D`，Carbon `RegisterEventHotKey`）及开机自启状态，完整适配浅/深色与「降低透明度」降级。
-- **右键（或 Control + 左键）点击状态栏图标**：弹出极速菜单（一键开关、场景预设、登录项、`⌘Q` 退出）。
+- **左键点击状态栏图标**：弹出原生毛玻璃控制中心，顶部提供双模式快捷胶囊与双层实时桌面预览（壁纸、后台窗、前台高亮窗、菜单栏与 Dock），下方分为「壁纸调暗 / 专注遮罩 / 通用与热键」三个标签页：
+  - **壁纸调暗**：5%–80% 连续滑杆、快捷预设（轻柔 25% / 专注 45% / 深夜 65% / 极暗 80%）、色温滤镜（中性黑 / 暖夜 / 深蓝夜）、仅深色生效、逐显示器独立开关
+  - **专注遮罩**：5%–85% 后台压暗滑杆与预设（轻柔 25% / 专注 45% / 沉浸 65% / 深邃 85%）、色调（跟随壁纸 / 中性黑 / 暖夜 / 深蓝夜）、菜单栏与 Dock 独立开关及一键预设（保留菜单栏与 Dock / 压暗全部）、聚焦粒度（前台应用 / 最前单窗）、多屏策略（副屏同步压暗 / 仅活跃屏幕）、过渡速度（柔和 / 灵敏 / 立即，自动遵循「减弱动态效果」）及当前外部焦点应用一键豁免
+  - **通用与热键**：双零权限 Carbon 全局热键（壁纸默认 `⌃⌥⌘D`、专注默认 `⌃⌥⌘F`，兼容保留已保存旧快捷键）、登录项状态与退出；完整适配浅/深色与「降低透明度」降级
+- **右键（或 Control + 左键）点击状态栏图标**：弹出极速菜单（壁纸调暗开关/预设、专注遮罩开关、同时压暗菜单栏与 Dock、聚焦范围与专注强度预设、登录项、`⌘Q` 退出）。
 
 设置用 `UserDefaults` 保存在 `~/Library/Preferences/local.zjx.DimWallpaper.plist`。
 
@@ -77,10 +93,10 @@ open ~/Applications/DimWallpaper.app
 
 ```bash
 ~/Applications/DimWallpaper.app/Contents/MacOS/DimWallpaper --status
-# enabled=true intensity=0.4 darkOnly=true tint=neutral hotKeyEnabled=true displays=1 loginItemStatus=1
+# enabled=true intensity=0.4 darkOnly=true tint=neutral hotKeyEnabled=true focusEnabled=false focusIntensity=0.45 focusScope=frontApplication dimMenuBar=false dimDock=false focusHotKeyEnabled=true displays=1 loginItemStatus=1
 # loginItemStatus: 0=notRegistered 1=enabled 2=requiresApproval 3=notFound
 
-# 输出完整 JSON（含在线显示器列表、色温、快捷键与隔离 suite 信息）
+# 输出完整 JSON（含在线显示器列表、壁纸与专注遮罩完整参数、双快捷键与隔离 suite 信息）
 ~/Applications/DimWallpaper.app/Contents/MacOS/DimWallpaper --status-json
 
 # 隔离沙箱运行参数（不触碰日用偏好与登录项）
@@ -127,7 +143,7 @@ defaults delete local.zjx.DimWallpaper
 - 暂停态（`enabled=false`）：`CGWindowListCopyWindowInfo(.optionOnScreenOnly)` 实测在屏桌面遮罩窗口为 `0`，确认 `orderOut` 释放 WindowServer 合成缓冲，新增崩溃日志为 `0`
 - 毛玻璃控制中心离屏 2× 快照（`324×674@2x`，浅色与深色模式）目视验收通过，分层桌面预览、预设胶囊、色温分段、双屏开关与 `⌥⌘D` 键帽无裁切无重叠
 
-未实测：通知中心覆盖、休眠唤醒后物理热插拔外接屏、真实键盘跨应用触发 `⌥⌘D` 全局热键、状态栏真实鼠标左右键手点及「降低透明度」系统开关实机切换。
+未实测（待真机动态验收）：专注遮罩（Focus Mode）在双显示器/多应用切换/菜单栏与 Dock 分条压暗下的实机渲染与 Z 序表现、双热键 `⌃⌥⌘D`/`⌃⌥⌘F` 真实键盘跨应用触发、通知中心覆盖、休眠唤醒后物理热插拔外接屏、状态栏真实鼠标左右键手点及「降低透明度」系统开关实机切换。
 
 ## 开源许可
 
