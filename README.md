@@ -116,7 +116,18 @@ defaults delete local.zjx.DimWallpaper
 - 重复 `open` 只保留一个实例
 - 菜单可见、状态条目正常出现（开启前后对比截图确认）
 
-未实测：多显示器（本机只有一块屏）、通知中心覆盖、休眠唤醒后重连外接屏，以及 `1.1.0` 新增毛玻璃控制中心、色温滤镜、逐屏开关与 `⌥⌘D` 全局快捷键（待真机动态验收后回填）。
+## 已验证（2026-11-25，`1.1.0` 分支隔离沙箱真机 / 双显示器）
+
+在 `TYPEC`（`1920×1080 @2x`）+ `内建视网膜显示器`（`1470×956 @2x`）双屏环境下通过 `--defaults-suite` + `--no-login-item` + `--allow-multiple-instances` 隔离实测（未触碰日用实例与偏好）：
+
+- `swift test` 核心纯逻辑单测 7/7 通过（`0.005s`）；`./build.sh` 生成 `dist/DimWallpaper.app`，`codesign --verify --deep --strict` 通过，`AppIcon_1024.png` 精确为 `1024×1024`
+- `--status` 与 `--status-json` 正确输出隔离 suite、双屏元数据与色温/热键字段
+- 激活态（`enabled=true, darkOnly=false, intensity=0.45`）：`CGWindowListCopyWindowInfo` 实测双屏各挂载 1 层遮罩，`kCGWindowLayer = -2147483622`（严格介于 `.desktopWindow = -2147483623` 与 `.desktopIconWindow = -2147483603` 之间），alpha `0.45`；连续 3 次 `ps` 采样空闲 **平均 CPU `0.00%`、平均 RSS `75.3 MB`**
+- 逐屏独立豁免（豁免 `id=3` 外接屏）：WindowServer 在屏遮罩窗口精确缩减为 `1` 个（仅内建屏 `1470×956`）
+- 暂停态（`enabled=false`）：`CGWindowListCopyWindowInfo(.optionOnScreenOnly)` 实测在屏桌面遮罩窗口为 `0`，确认 `orderOut` 释放 WindowServer 合成缓冲，新增崩溃日志为 `0`
+- 毛玻璃控制中心离屏 2× 快照（`324×674@2x`，浅色与深色模式）目视验收通过，分层桌面预览、预设胶囊、色温分段、双屏开关与 `⌥⌘D` 键帽无裁切无重叠
+
+未实测：通知中心覆盖、休眠唤醒后物理热插拔外接屏、真实键盘跨应用触发 `⌥⌘D` 全局热键、状态栏真实鼠标左右键手点及「降低透明度」系统开关实机切换。
 
 ## 开源许可
 

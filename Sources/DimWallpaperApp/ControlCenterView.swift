@@ -363,9 +363,10 @@ struct ControlCenterView: View {
                     .font(.system(size: 12, weight: .medium))
                 Spacer()
                 Text(controller.state.snapshot.hotKeyBinding.displayLabel)
-                    .font(.system(size: 10.5, weight: .semibold).monospaced())
+                    .font(.system(size: 11, weight: .medium))
+                    .tracking(1.2)
                     .foregroundStyle(controller.state.snapshot.hotKeyEnabled ? .primary : .secondary)
-                    .padding(.horizontal, 6)
+                    .padding(.horizontal, 7)
                     .padding(.vertical, 2)
                     .background(
                         RoundedRectangle(cornerRadius: 5, style: .continuous)
