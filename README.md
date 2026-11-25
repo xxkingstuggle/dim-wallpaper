@@ -143,7 +143,17 @@ defaults delete local.zjx.DimWallpaper
 - 暂停态（`enabled=false`）：`CGWindowListCopyWindowInfo(.optionOnScreenOnly)` 实测在屏桌面遮罩窗口为 `0`，确认 `orderOut` 释放 WindowServer 合成缓冲，新增崩溃日志为 `0`
 - 毛玻璃控制中心离屏 2× 快照（`324×674@2x`，浅色与深色模式）目视验收通过，分层桌面预览、预设胶囊、色温分段、双屏开关与 `⌥⌘D` 键帽无裁切无重叠
 
-未实测（待真机动态验收）：专注遮罩（Focus Mode）在双显示器/多应用切换/菜单栏与 Dock 分条压暗下的实机渲染与 Z 序表现、双热键 `⌃⌥⌘D`/`⌃⌥⌘F` 真实键盘跨应用触发、通知中心覆盖、休眠唤醒后物理热插拔外接屏、状态栏真实鼠标左右键手点及「降低透明度」系统开关实机切换。
+## 已验证（2026-11-26，v2 专注遮罩双显示器 WindowServer 动态实测）
+
+在 `TYPEC`（`1920×1080 @2x`，含底部 75pt Dock 与顶部 30pt 菜单栏）+ `内建视网膜显示器`（`1470×956 @2x`，顶部 32–33pt 刘海菜单栏）双屏环境下，使用独立 `--defaults-suite` 与 CLI 诊断覆盖参数隔离实测（0 硬件显示配置 API）：
+
+- `swift test` 全量核心单测 **16/16 通过**（`0.008s`）；单模块 `swiftc -typecheck -warnings-as-errors -swift-version 6` 0 警告 0 报错；`./build.sh` 产物 `dist/DimWallpaper.app` 通过 `codesign --verify --deep --strict`
+- **冷启动非 `.regular` 瞬态进程免疫**：实测当前台为 `com.apple.UserNotificationCenter`（`activationPolicy != .regular`）时，自动穿透回退并锚定至顶层标准窗口 `ChatGPT`（`win#=391, layer=0`）
+- **场景 A（保留菜单栏与 Dock，`--focus-enabled true --dim-menubar false --dim-dock false`）**：WindowServer 实测挂载 2 层桌面遮罩（`layer=-2147483622`）+ 2 层专注主遮罩（`layer=0, alpha=0.45`）、`0` 个菜单栏条（`layer=26`）、`0` 个 Dock 条（`layer=21`）；主屏专注遮罩（`idx=8, win#=798`）严格排在顶层外部窗 `ChatGPT`（`idx=7, win#=391`）下方；`SIGTERM` 退出后在屏残留窗口为 `0`
+- **场景 B（压暗全部含菜单栏与 Dock，`--focus-enabled true --dim-menubar true --dim-dock true`）**：WindowServer 实测同时挂载 2 层桌面遮罩（`layer=-2147483622`）、2 层专注主遮罩（`layer=0`）、2 条菜单栏遮罩（`layer=26`，主屏 `30pt` / 内建屏 `33pt`）与 1 条主屏 Dock 遮罩（`layer=21, 75pt`）；主屏专注主遮罩（`idx=11`）严格排在 `ChatGPT`（`idx=10`）下方；全部 5 个专注遮罩窗口两两交集面积 **`0.0000`**（零重叠无黑带）；退出后残留窗口为 `0`
+- **平滑热更新常驻实例**：旧用户偏好完整保留（`enabled=true, intensity=0.0537, darkOnly=false, hotKey=⌥⌘D, loginItemStatus=1`），新版专注默认就绪（`focusEnabled=false, focusHotKey=⌃⌥⌘F`），常驻态 3 次采样空闲 **CPU `0.0%`、RSS `73.0 MB`**
+
+未实测：双热键 `⌃⌥⌘D`/`⌃⌥⌘F` 真实键盘跨应用触发、多应用连续手动切换动画观感、通知中心覆盖、休眠唤醒后物理热插拔外接屏、状态栏真实鼠标左右键手点及「降低透明度」系统开关实机切换。
 
 ## 开源许可
 
