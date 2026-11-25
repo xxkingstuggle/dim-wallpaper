@@ -183,11 +183,26 @@ public struct FocusAppIdentity: Equatable, Codable, Sendable {
     public let pid: Int32
     public let bundleIdentifier: String?
     public let localizedName: String
+    public let isRegularActivationPolicy: Bool
 
-    public init(pid: Int32, bundleIdentifier: String?, localizedName: String) {
+    public init(
+        pid: Int32,
+        bundleIdentifier: String?,
+        localizedName: String,
+        isRegularActivationPolicy: Bool = true
+    ) {
         self.pid = pid
         self.bundleIdentifier = bundleIdentifier
         self.localizedName = localizedName
+        self.isRegularActivationPolicy = isRegularActivationPolicy
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.pid = try container.decode(Int32.self, forKey: .pid)
+        self.bundleIdentifier = try container.decodeIfPresent(String.self, forKey: .bundleIdentifier)
+        self.localizedName = try container.decode(String.self, forKey: .localizedName)
+        self.isRegularActivationPolicy = try container.decodeIfPresent(Bool.self, forKey: .isRegularActivationPolicy) ?? true
     }
 }
 
@@ -424,6 +439,13 @@ public struct FocusTargetResolver: Equatable, Sendable {
         "com.apple.Spotlight",
         "com.apple.notificationcenterui",
         "com.apple.controlcenter",
+        "com.apple.UserNotificationCenter",
+        "com.apple.SecurityAgent",
+        "com.apple.CoreServicesUIAgent",
+        "com.apple.WindowManager",
+        "com.apple.OSDUIHelper",
+        "com.apple.dock",
+        "com.apple.loginwindow",
     ]
 
     public let selfPID: Int32
@@ -436,13 +458,19 @@ public struct FocusTargetResolver: Equatable, Sendable {
 
     public mutating func resolve(
         currentFrontmost: FocusAppIdentity?,
-        excludedBundleIDs: Set<String>
+        excludedBundleIDs: Set<String>,
+        observedWindows: [ObservedWindowInfo] = [],
+        fallbackAppProvider: ((Int32) -> FocusAppIdentity?)? = nil
     ) -> FocusTargetResolution {
-        let candidate: FocusAppIdentity?
+        var candidate: FocusAppIdentity?
         if let currentFrontmost {
             let isSelf = currentFrontmost.pid == selfPID
             let isTransient = currentFrontmost.bundleIdentifier.map { Self.ignoredTransientBundleIDs.contains($0) } ?? false
-            if isSelf || isTransient {
+            let isNonRegularWithoutStandardWindow = !currentFrontmost.isRegularActivationPolicy
+                && !observedWindows.contains {
+                    $0.ownerPID == currentFrontmost.pid && $0.isEligibleStandardWindow(excludingSelfPID: selfPID)
+                }
+            if isSelf || isTransient || isNonRegularWithoutStandardWindow {
                 candidate = lastExternalFrontmostApp
             } else {
                 lastExternalFrontmostApp = currentFrontmost
@@ -452,6 +480,16 @@ public struct FocusTargetResolver: Equatable, Sendable {
             candidate = lastExternalFrontmostApp
         }
 
+        if candidate == nil, !observedWindows.isEmpty {
+            if let fallback = resolveColdStartFallback(
+                observedWindows: observedWindows,
+                fallbackAppProvider: fallbackAppProvider
+            ) {
+                lastExternalFrontmostApp = fallback
+                candidate = fallback
+            }
+        }
+
         guard let target = candidate else {
             return .unavailable
         }
@@ -459,6 +497,34 @@ public struct FocusTargetResolver: Equatable, Sendable {
             return .pausedByExcludedApp(target)
         }
         return .active(target)
+    }
+
+    private func resolveColdStartFallback(
+        observedWindows: [ObservedWindowInfo],
+        fallbackAppProvider: ((Int32) -> FocusAppIdentity?)?
+    ) -> FocusAppIdentity? {
+        var seenPIDs = Set<Int32>()
+        for window in observedWindows {
+            guard window.isEligibleStandardWindow(excludingSelfPID: selfPID) else { continue }
+            guard seenPIDs.insert(window.ownerPID).inserted else { continue }
+
+            if let fallbackAppProvider {
+                guard let resolved = fallbackAppProvider(window.ownerPID) else { continue }
+                let isTransient = resolved.bundleIdentifier.map { Self.ignoredTransientBundleIDs.contains($0) } ?? false
+                if isTransient || resolved.pid == selfPID {
+                    continue
+                }
+                return resolved
+            }
+
+            return FocusAppIdentity(
+                pid: window.ownerPID,
+                bundleIdentifier: nil,
+                localizedName: "PID \(window.ownerPID)",
+                isRegularActivationPolicy: true
+            )
+        }
+        return nil
     }
 }
 
@@ -553,7 +619,8 @@ public enum FocusWindowOrderPlanner {
         scope: FocusScope,
         dimMenuBar: Bool,
         dimDock: Bool,
-        multiDisplayPolicy: FocusMultiDisplayPolicy
+        multiDisplayPolicy: FocusMultiDisplayPolicy,
+        excludedDisplayIDs: Set<UInt32> = []
     ) -> [FocusDisplayPlan] {
         guard !screens.isEmpty else { return [] }
 
@@ -579,6 +646,16 @@ public enum FocusWindowOrderPlanner {
         let globalFrontmostTargetWindowNumber: Int? = eligibleWindows.first(where: { $0.window.ownerPID == targetPID })?.window.windowNumber
 
         return screens.map { screen in
+            if excludedDisplayIDs.contains(screen.displayID) {
+                return FocusDisplayPlan(
+                    displayID: screen.displayID,
+                    placement: .hidden,
+                    partition: FocusScreenPartition(mainRect: screen.frame, menuBarStripRect: nil, dockStripRects: []),
+                    targetAlpha: 0.0,
+                    foregroundWindowFrames: []
+                )
+            }
+
             let screenWindows = eligibleWindows.filter { entry in
                 windowIntersectsScreen(windowRect: entry.appKitRect, screen: screen, allScreens: screens)
             }

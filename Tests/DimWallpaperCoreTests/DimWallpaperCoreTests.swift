@@ -459,6 +459,27 @@ final class DimWallpaperCoreTests: XCTestCase {
             multiDisplayPolicy: .dimInactiveScreens
         )
         XCTAssertTrue(disabledPlans.allSatisfy { $0.placement == .hidden && $0.targetAlpha == 0.0 })
+
+        let excludedSecondaryPlans = FocusWindowOrderPlanner.plan(
+            screens: screens,
+            windows: windows,
+            targetPID: targetPID,
+            selfPID: selfPID,
+            isEnabled: true,
+            intensity: 0.50,
+            scope: .frontApplication,
+            dimMenuBar: true,
+            dimDock: true,
+            multiDisplayPolicy: .dimInactiveScreens,
+            excludedDisplayIDs: [2]
+        )
+        XCTAssertEqual(excludedSecondaryPlans[0].placement, .orderBelow(windowNumber: 102))
+        XCTAssertEqual(excludedSecondaryPlans[0].targetAlpha, 0.50, accuracy: 0.0001)
+        XCTAssertEqual(excludedSecondaryPlans[1].placement, .hidden)
+        XCTAssertEqual(excludedSecondaryPlans[1].targetAlpha, 0.0)
+        XCTAssertNil(excludedSecondaryPlans[1].partition.menuBarStripRect)
+        XCTAssertTrue(excludedSecondaryPlans[1].partition.dockStripRects.isEmpty)
+        XCTAssertFalse(excludedSecondaryPlans[1].shouldShow)
     }
 
     func testFocusTargetResolverSelfKeepAliveTransientAppsAndExclusionToggle() {
@@ -486,6 +507,106 @@ final class DimWallpaperCoreTests: XCTestCase {
         XCTAssertEqual(resolver.lastExternalFrontmostApp, xcode)
         XCTAssertEqual(resolver.resolve(currentFrontmost: selfApp, excludedBundleIDs: excluded), .pausedByExcludedApp(xcode))
         XCTAssertEqual(resolver.resolve(currentFrontmost: selfApp, excludedBundleIDs: []), .active(xcode))
+    }
+
+    func testFocusTargetResolverIgnoresNonRegularHelpersAndFallsBackToTopStandardWindowOnColdStart() {
+        let selfPID: Int32 = 888
+        let chatGPTPID: Int32 = 410
+        let notificationPID: Int32 = 420
+        let helperPID: Int32 = 430
+
+        let chatGPT = FocusAppIdentity(
+            pid: chatGPTPID,
+            bundleIdentifier: "com.openai.chat",
+            localizedName: "ChatGPT",
+            isRegularActivationPolicy: true
+        )
+        let userNotificationCenter = FocusAppIdentity(
+            pid: notificationPID,
+            bundleIdentifier: "com.apple.UserNotificationCenter",
+            localizedName: "UserNotificationCenter",
+            isRegularActivationPolicy: false
+        )
+        let menuBarHelper = FocusAppIdentity(
+            pid: helperPID,
+            bundleIdentifier: "com.example.MenuBarHelper",
+            localizedName: "MenuBarHelper",
+            isRegularActivationPolicy: false
+        )
+        let selfApp = FocusAppIdentity(
+            pid: selfPID,
+            bundleIdentifier: "local.zjx.DimWallpaper",
+            localizedName: "DimWallpaper",
+            isRegularActivationPolicy: false
+        )
+
+        let observedWindows: [ObservedWindowInfo] = [
+            ObservedWindowInfo(windowNumber: 10, ownerPID: notificationPID, layer: 8, alpha: 1.0, cgBounds: CGRect(x: 800, y: 80, width: 360, height: 120)),
+            ObservedWindowInfo(windowNumber: 11, ownerPID: selfPID, layer: 0, alpha: 0.45, cgBounds: CGRect(x: 0, y: 0, width: 1920, height: 1080)),
+            ObservedWindowInfo(windowNumber: 12, ownerPID: chatGPTPID, layer: 0, alpha: 1.0, cgBounds: CGRect(x: 120, y: 80, width: 1200, height: 820)),
+        ]
+        let appsByPID: [Int32: FocusAppIdentity] = [
+            chatGPTPID: chatGPT,
+            notificationPID: userNotificationCenter,
+            helperPID: menuBarHelper,
+            selfPID: selfApp,
+        ]
+
+        var coldResolver = FocusTargetResolver(selfPID: selfPID)
+        let coldResolution = coldResolver.resolve(
+            currentFrontmost: userNotificationCenter,
+            excludedBundleIDs: [],
+            observedWindows: observedWindows,
+            fallbackAppProvider: { appsByPID[$0] }
+        )
+        XCTAssertEqual(coldResolution, .active(chatGPT))
+        XCTAssertEqual(coldResolver.lastExternalFrontmostApp, chatGPT)
+
+        let helperNoLayer0Resolution = coldResolver.resolve(
+            currentFrontmost: menuBarHelper,
+            excludedBundleIDs: [],
+            observedWindows: observedWindows,
+            fallbackAppProvider: { appsByPID[$0] }
+        )
+        XCTAssertEqual(helperNoLayer0Resolution, .active(chatGPT))
+        XCTAssertEqual(coldResolver.lastExternalFrontmostApp, chatGPT)
+
+        var selfColdResolver = FocusTargetResolver(selfPID: selfPID)
+        let selfColdResolution = selfColdResolver.resolve(
+            currentFrontmost: selfApp,
+            excludedBundleIDs: [],
+            observedWindows: observedWindows,
+            fallbackAppProvider: { appsByPID[$0] }
+        )
+        XCTAssertEqual(selfColdResolution, .active(chatGPT))
+    }
+
+    func testLaunchOptionsFocusDiagnosticOverridesAndClamping() {
+        let parsed = LaunchOptions.parse(
+            arguments: [
+                "DimWallpaper",
+                "--defaults-suite", "audit.focus.suite",
+                "--focus-enabled", "true",
+                "--focus-intensity", "0.95",
+                "--dim-menubar=true",
+                "--dim-dock", "false",
+                "--focus-scope", "frontWindow",
+            ],
+            environment: [:]
+        )
+        XCTAssertTrue(parsed.hasFocusOverrides)
+        XCTAssertEqual(parsed.focusEnabledOverride, true)
+        XCTAssertEqual(parsed.focusIntensityOverride ?? 0, FocusBounds.maximumIntensity, accuracy: 0.0001)
+        XCTAssertEqual(parsed.dimMenuBarOverride, true)
+        XCTAssertEqual(parsed.dimDockOverride, false)
+        XCTAssertEqual(parsed.focusScopeOverride, .frontWindow)
+
+        let overridden = parsed.applyingOverrides(to: DimmingSnapshot())
+        XCTAssertTrue(overridden.focusEnabled)
+        XCTAssertEqual(overridden.focusIntensity, FocusBounds.maximumIntensity, accuracy: 0.0001)
+        XCTAssertTrue(overridden.dimMenuBar)
+        XCTAssertFalse(overridden.dimDock)
+        XCTAssertEqual(overridden.focusScope, .frontWindow)
     }
 
     func testDualHotKeysFocusPreferencesRoundTripAndLegacyBackwardCompatibility() throws {

@@ -178,19 +178,62 @@ public struct LaunchOptions: Equatable, Sendable {
     public var defaultsSuiteName: String?
     public var disableLoginItemSetup: Bool
     public var allowMultipleInstances: Bool
+    public var focusEnabledOverride: Bool?
+    public var focusIntensityOverride: Double?
+    public var dimMenuBarOverride: Bool?
+    public var dimDockOverride: Bool?
+    public var focusScopeOverride: FocusScope?
 
     public init(
         printStatus: Bool = false,
         printStatusJSON: Bool = false,
         defaultsSuiteName: String? = nil,
         disableLoginItemSetup: Bool = false,
-        allowMultipleInstances: Bool = false
+        allowMultipleInstances: Bool = false,
+        focusEnabledOverride: Bool? = nil,
+        focusIntensityOverride: Double? = nil,
+        dimMenuBarOverride: Bool? = nil,
+        dimDockOverride: Bool? = nil,
+        focusScopeOverride: FocusScope? = nil
     ) {
         self.printStatus = printStatus
         self.printStatusJSON = printStatusJSON
         self.defaultsSuiteName = defaultsSuiteName
         self.disableLoginItemSetup = disableLoginItemSetup
         self.allowMultipleInstances = allowMultipleInstances
+        self.focusEnabledOverride = focusEnabledOverride
+        self.focusIntensityOverride = focusIntensityOverride.map(FocusBounds.clampedIntensity)
+        self.dimMenuBarOverride = dimMenuBarOverride
+        self.dimDockOverride = dimDockOverride
+        self.focusScopeOverride = focusScopeOverride
+    }
+
+    public var hasFocusOverrides: Bool {
+        focusEnabledOverride != nil
+            || focusIntensityOverride != nil
+            || dimMenuBarOverride != nil
+            || dimDockOverride != nil
+            || focusScopeOverride != nil
+    }
+
+    public func applyingOverrides(to snapshot: DimmingSnapshot) -> DimmingSnapshot {
+        var updated = snapshot
+        if let focusEnabledOverride {
+            updated.focusEnabled = focusEnabledOverride
+        }
+        if let focusIntensityOverride {
+            updated.focusIntensity = FocusBounds.clampedIntensity(focusIntensityOverride)
+        }
+        if let dimMenuBarOverride {
+            updated.dimMenuBar = dimMenuBarOverride
+        }
+        if let dimDockOverride {
+            updated.dimDock = dimDockOverride
+        }
+        if let focusScopeOverride {
+            updated.focusScope = focusScopeOverride
+        }
+        return updated
     }
 
     public static func parse(arguments: [String], environment: [String: String] = [:]) -> LaunchOptions {
@@ -223,6 +266,26 @@ public struct LaunchOptions: Equatable, Sendable {
                     }
                     index = valueIndex
                 }
+            case "--focus-enabled":
+                if let rawValue = nextValue(after: &index, in: arguments), let parsed = parseBool(rawValue) {
+                    options.focusEnabledOverride = parsed
+                }
+            case "--focus-intensity":
+                if let rawValue = nextValue(after: &index, in: arguments), let parsed = Double(rawValue), parsed.isFinite {
+                    options.focusIntensityOverride = FocusBounds.clampedIntensity(parsed)
+                }
+            case "--dim-menubar":
+                if let rawValue = nextValue(after: &index, in: arguments), let parsed = parseBool(rawValue) {
+                    options.dimMenuBarOverride = parsed
+                }
+            case "--dim-dock":
+                if let rawValue = nextValue(after: &index, in: arguments), let parsed = parseBool(rawValue) {
+                    options.dimDockOverride = parsed
+                }
+            case "--focus-scope":
+                if let rawValue = nextValue(after: &index, in: arguments), let parsed = FocusScope(rawValue: rawValue) {
+                    options.focusScopeOverride = parsed
+                }
             default:
                 if argument.hasPrefix("--defaults-suite=") {
                     let candidate = String(argument.dropFirst("--defaults-suite=".count))
@@ -231,11 +294,51 @@ public struct LaunchOptions: Equatable, Sendable {
                         options.defaultsSuiteName = candidate
                         options.disableLoginItemSetup = true
                     }
+                } else if argument.hasPrefix("--focus-enabled=") {
+                    let raw = String(argument.dropFirst("--focus-enabled=".count))
+                    if let parsed = parseBool(raw) {
+                        options.focusEnabledOverride = parsed
+                    }
+                } else if argument.hasPrefix("--focus-intensity=") {
+                    let raw = String(argument.dropFirst("--focus-intensity=".count))
+                    if let parsed = Double(raw), parsed.isFinite {
+                        options.focusIntensityOverride = FocusBounds.clampedIntensity(parsed)
+                    }
+                } else if argument.hasPrefix("--dim-menubar=") {
+                    let raw = String(argument.dropFirst("--dim-menubar=".count))
+                    if let parsed = parseBool(raw) {
+                        options.dimMenuBarOverride = parsed
+                    }
+                } else if argument.hasPrefix("--dim-dock=") {
+                    let raw = String(argument.dropFirst("--dim-dock=".count))
+                    if let parsed = parseBool(raw) {
+                        options.dimDockOverride = parsed
+                    }
+                } else if argument.hasPrefix("--focus-scope=") {
+                    let raw = String(argument.dropFirst("--focus-scope=".count))
+                    if let parsed = FocusScope(rawValue: raw) {
+                        options.focusScopeOverride = parsed
+                    }
                 }
             }
             index += 1
         }
         return options
+    }
+
+    private static func nextValue(after index: inout Int, in arguments: [String]) -> String? {
+        let valueIndex = index + 1
+        guard valueIndex < arguments.count else { return nil }
+        index = valueIndex
+        return arguments[valueIndex].trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func parseBool(_ value: String) -> Bool? {
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "true", "1", "yes", "on": true
+        case "false", "0", "no", "off": false
+        default: nil
+        }
     }
 }
 

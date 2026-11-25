@@ -70,7 +70,11 @@ final class DimWallpaperController: ObservableObject {
         self.launchOptions = launchOptions
         let preferences = PreferencesStore(suiteName: launchOptions.defaultsSuiteName)
         self.store = preferences
-        let initialSnapshot = preferences.load()
+        let loadedSnapshot = preferences.load()
+        let initialSnapshot = launchOptions.applyingOverrides(to: loadedSnapshot)
+        if launchOptions.defaultsSuiteName != nil, launchOptions.hasFocusOverrides {
+            preferences.save(initialSnapshot)
+        }
         let initialDisplays = Self.captureOnlineDisplays()
         self.state = DimmingEngineState(
             snapshot: initialSnapshot,
@@ -205,6 +209,7 @@ final class DimWallpaperController: ObservableObject {
         state.setDisplayExcluded(displayID, excluded: shouldExclude)
         persistImmediately()
         applyOverlays(animated: true)
+        refreshFocusOverlays(animated: true, forceUpdate: true)
         onStatusAppearanceChanged?()
     }
 
@@ -336,9 +341,12 @@ final class DimWallpaperController: ObservableObject {
 
     func captureExternalFrontmostAppIfNeeded() {
         let current = Self.currentFrontmostAppIdentity()
+        let observedWindows = Self.captureOnScreenWindows()
         _ = focusTargetResolver.resolve(
             currentFrontmost: current,
-            excludedBundleIDs: state.snapshot.focusExcludedBundleIDs
+            excludedBundleIDs: state.snapshot.focusExcludedBundleIDs,
+            observedWindows: observedWindows,
+            fallbackAppProvider: Self.appIdentity(forPID:)
         )
         if trackedExternalApp != focusTargetResolver.lastExternalFrontmostApp {
             trackedExternalApp = focusTargetResolver.lastExternalFrontmostApp
@@ -495,6 +503,7 @@ final class DimWallpaperController: ObservableObject {
             guard nextDark != self.state.isDarkAppearance else { return }
             self.state.isDarkAppearance = nextDark
             self.applyOverlays(animated: true)
+            self.refreshFocusOverlays(animated: false, forceUpdate: false)
             self.onStatusAppearanceChanged?()
         }
         pendingAppearanceSync = work
@@ -563,10 +572,22 @@ final class DimWallpaperController: ObservableObject {
     private func refreshFocusOverlays(animated: Bool, forceUpdate: Bool) {
         guard isStarted else { return }
 
+        guard state.isFocusGloballyActive, !isScreenAsleep else {
+            if isFocusPausedByExcludedApp {
+                isFocusPausedByExcludedApp = false
+                onStatusAppearanceChanged?()
+            }
+            hideAndReleaseFocusOverlays(animated: animated && !isScreenAsleep)
+            return
+        }
+
         let currentFrontmost = Self.currentFrontmostAppIdentity()
+        let observedWindows = Self.captureOnScreenWindows()
         let targetResolution = focusTargetResolver.resolve(
             currentFrontmost: currentFrontmost,
-            excludedBundleIDs: state.snapshot.focusExcludedBundleIDs
+            excludedBundleIDs: state.snapshot.focusExcludedBundleIDs,
+            observedWindows: observedWindows,
+            fallbackAppProvider: Self.appIdentity(forPID:)
         )
         if trackedExternalApp != focusTargetResolver.lastExternalFrontmostApp {
             trackedExternalApp = focusTargetResolver.lastExternalFrontmostApp
@@ -590,13 +611,12 @@ final class DimWallpaperController: ObservableObject {
             onStatusAppearanceChanged?()
         }
 
-        guard state.isFocusGloballyActive, !isScreenAsleep, !pausedByExclusion else {
-            hideAndReleaseFocusOverlays(animated: animated && !isScreenAsleep)
+        guard !pausedByExclusion else {
+            hideAndReleaseFocusOverlays(animated: animated)
             return
         }
 
         let screenGeometries = Self.captureScreenGeometries()
-        let observedWindows = Self.captureOnScreenWindows()
         let plans = FocusWindowOrderPlanner.plan(
             screens: screenGeometries,
             windows: observedWindows,
@@ -607,7 +627,8 @@ final class DimWallpaperController: ObservableObject {
             scope: state.snapshot.focusScope,
             dimMenuBar: state.snapshot.dimMenuBar,
             dimDock: state.snapshot.dimDock,
-            multiDisplayPolicy: state.snapshot.focusMultiDisplayPolicy
+            multiDisplayPolicy: state.snapshot.focusMultiDisplayPolicy,
+            excludedDisplayIDs: state.snapshot.excludedDisplayIDs
         )
 
         let onlineIDs = Set(screenGeometries.map(\.displayID))
@@ -879,11 +900,21 @@ final class DimWallpaperController: ObservableObject {
 
     private static func currentFrontmostAppIdentity() -> FocusAppIdentity? {
         guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
+        return makeAppIdentity(from: app)
+    }
+
+    private static func appIdentity(forPID pid: Int32) -> FocusAppIdentity? {
+        guard let app = NSRunningApplication(processIdentifier: pid) else { return nil }
+        return makeAppIdentity(from: app)
+    }
+
+    private static func makeAppIdentity(from app: NSRunningApplication) -> FocusAppIdentity {
         let name = app.localizedName ?? app.bundleIdentifier ?? "PID \(app.processIdentifier)"
         return FocusAppIdentity(
             pid: app.processIdentifier,
             bundleIdentifier: app.bundleIdentifier,
-            localizedName: name
+            localizedName: name,
+            isRegularActivationPolicy: app.activationPolicy == .regular
         )
     }
 
