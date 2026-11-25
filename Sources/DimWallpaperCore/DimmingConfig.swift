@@ -1,0 +1,253 @@
+import Foundation
+
+public enum DimmingBounds {
+    public static let minimumIntensity: Double = 0.05
+    public static let maximumIntensity: Double = 0.80
+    public static let defaultIntensity: Double = 0.40
+    public static let visibilityEpsilon: Double = 0.005
+
+    public static func clampedIntensity(_ value: Double) -> Double {
+        guard value.isFinite else { return defaultIntensity }
+        return min(max(value, minimumIntensity), maximumIntensity)
+    }
+
+    public static func percentage(for intensity: Double) -> Int {
+        Int((clampedIntensity(intensity) * 100.0).rounded())
+    }
+}
+
+public enum DimmingPreset: String, CaseIterable, Identifiable, Codable, Sendable {
+    case gentle
+    case focus
+    case night
+    case deep
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .gentle: "轻柔"
+        case .focus: "专注"
+        case .night: "深夜"
+        case .deep: "极暗"
+        }
+    }
+
+    public var symbolName: String {
+        switch self {
+        case .gentle: "sun.haze"
+        case .focus: "sparkles"
+        case .night: "moon.stars"
+        case .deep: "moon.zzz"
+        }
+    }
+
+    public var intensity: Double {
+        switch self {
+        case .gentle: 0.25
+        case .focus: 0.45
+        case .night: 0.65
+        case .deep: 0.80
+        }
+    }
+
+    public var percentage: Int {
+        DimmingBounds.percentage(for: intensity)
+    }
+
+    public static func matching(intensity: Double, tolerance: Double = 0.015) -> DimmingPreset? {
+        let clamped = DimmingBounds.clampedIntensity(intensity)
+        return allCases.first { abs($0.intensity - clamped) <= tolerance }
+    }
+}
+
+public struct TintComponents: Equatable, Sendable {
+    public let red: Double
+    public let green: Double
+    public let blue: Double
+
+    public init(red: Double, green: Double, blue: Double) {
+        self.red = red
+        self.green = green
+        self.blue = blue
+    }
+}
+
+public enum DimmingTint: String, CaseIterable, Identifiable, Codable, Sendable {
+    case neutral
+    case warmNight
+    case coolSlate
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .neutral: "中性黑"
+        case .warmNight: "暖夜"
+        case .coolSlate: "深蓝夜"
+        }
+    }
+
+    public var components: TintComponents {
+        switch self {
+        case .neutral: TintComponents(red: 0.0, green: 0.0, blue: 0.0)
+        case .warmNight: TintComponents(red: 0.11, green: 0.07, blue: 0.03)
+        case .coolSlate: TintComponents(red: 0.03, green: 0.055, blue: 0.105)
+        }
+    }
+
+    public var swatchComponents: TintComponents {
+        switch self {
+        case .neutral: TintComponents(red: 0.15, green: 0.16, blue: 0.19)
+        case .warmNight: TintComponents(red: 0.62, green: 0.40, blue: 0.18)
+        case .coolSlate: TintComponents(red: 0.22, green: 0.36, blue: 0.62)
+        }
+    }
+}
+
+public struct HotKeyBinding: Equatable, Codable, Sendable {
+    public static let commandMask: UInt32 = 0x0100
+    public static let shiftMask: UInt32 = 0x0200
+    public static let optionMask: UInt32 = 0x0800
+    public static let controlMask: UInt32 = 0x1000
+    public static let supportedModifiersMask: UInt32 = commandMask | shiftMask | optionMask | controlMask
+
+    public static let defaultToggle = HotKeyBinding(keyCode: 2, modifiers: optionMask | commandMask)
+
+    public var keyCode: UInt32
+    public var modifiers: UInt32
+
+    public init(keyCode: UInt32, modifiers: UInt32) {
+        self.keyCode = keyCode
+        self.modifiers = modifiers & Self.supportedModifiersMask
+    }
+
+    public var isValid: Bool {
+        let hasPrimaryModifier = (modifiers & (Self.commandMask | Self.optionMask | Self.controlMask)) != 0
+        return hasPrimaryModifier && keyCode <= 127
+    }
+
+    public var displayLabel: String {
+        var symbols = ""
+        if (modifiers & Self.controlMask) != 0 { symbols += "⌃" }
+        if (modifiers & Self.optionMask) != 0 { symbols += "⌥" }
+        if (modifiers & Self.shiftMask) != 0 { symbols += "⇧" }
+        if (modifiers & Self.commandMask) != 0 { symbols += "⌘" }
+        return symbols + Self.keyLabel(for: keyCode)
+    }
+
+    private static func keyLabel(for keyCode: UInt32) -> String {
+        switch keyCode {
+        case 0: "A"
+        case 1: "S"
+        case 2: "D"
+        case 3: "F"
+        case 4: "H"
+        case 5: "G"
+        case 6: "Z"
+        case 7: "X"
+        case 8: "C"
+        case 9: "V"
+        case 11: "B"
+        case 12: "Q"
+        case 13: "W"
+        case 14: "E"
+        case 15: "R"
+        case 16: "Y"
+        case 17: "T"
+        case 31: "O"
+        case 32: "U"
+        case 34: "I"
+        case 35: "P"
+        case 37: "L"
+        case 38: "J"
+        case 40: "K"
+        case 45: "N"
+        case 46: "M"
+        default: "Key\(keyCode)"
+        }
+    }
+}
+
+public struct LaunchOptions: Equatable, Sendable {
+    public static let defaultsSuiteEnvironmentKey = "DIM_WALLPAPER_DEFAULTS_SUITE"
+
+    public var printStatus: Bool
+    public var printStatusJSON: Bool
+    public var defaultsSuiteName: String?
+    public var disableLoginItemSetup: Bool
+    public var allowMultipleInstances: Bool
+
+    public init(
+        printStatus: Bool = false,
+        printStatusJSON: Bool = false,
+        defaultsSuiteName: String? = nil,
+        disableLoginItemSetup: Bool = false,
+        allowMultipleInstances: Bool = false
+    ) {
+        self.printStatus = printStatus
+        self.printStatusJSON = printStatusJSON
+        self.defaultsSuiteName = defaultsSuiteName
+        self.disableLoginItemSetup = disableLoginItemSetup
+        self.allowMultipleInstances = allowMultipleInstances
+    }
+
+    public static func parse(arguments: [String], environment: [String: String] = [:]) -> LaunchOptions {
+        var options = LaunchOptions()
+        if let envSuite = environment[defaultsSuiteEnvironmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !envSuite.isEmpty {
+            options.defaultsSuiteName = envSuite
+            options.disableLoginItemSetup = true
+        }
+
+        var index = 1
+        while index < arguments.count {
+            let argument = arguments[index]
+            switch argument {
+            case "--status":
+                options.printStatus = true
+            case "--status-json":
+                options.printStatusJSON = true
+            case "--no-login-item":
+                options.disableLoginItemSetup = true
+            case "--allow-multiple-instances":
+                options.allowMultipleInstances = true
+            case "--defaults-suite":
+                let valueIndex = index + 1
+                if valueIndex < arguments.count {
+                    let candidate = arguments[valueIndex].trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !candidate.isEmpty {
+                        options.defaultsSuiteName = candidate
+                        options.disableLoginItemSetup = true
+                    }
+                    index = valueIndex
+                }
+            default:
+                if argument.hasPrefix("--defaults-suite=") {
+                    let candidate = String(argument.dropFirst("--defaults-suite=".count))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !candidate.isEmpty {
+                        options.defaultsSuiteName = candidate
+                        options.disableLoginItemSetup = true
+                    }
+                }
+            }
+            index += 1
+        }
+        return options
+    }
+}
+
+public enum OverlayWindowPolicy {
+    public static func resolvedWindowLevel(desktopLevel: Int32, desktopIconLevel: Int32) -> Int {
+        let preferred = Int(desktopLevel) + 1
+        if preferred < Int(desktopIconLevel) {
+            return preferred
+        }
+        return Int(desktopLevel)
+    }
+
+    public static func isStrictlyBetweenDesktopAndIcons(level: Int, desktopLevel: Int32, desktopIconLevel: Int32) -> Bool {
+        level > Int(desktopLevel) && level < Int(desktopIconLevel)
+    }
+}
