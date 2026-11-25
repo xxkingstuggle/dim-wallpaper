@@ -89,6 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
         if popover.isShown {
             closePopover()
         } else {
+            controller.captureExternalFrontmostAppIfNeeded()
             controller.refreshLoginStatus()
             controller.refreshDisplaysNow()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -136,6 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
     // MARK: - Right-Click Quick Menu
 
     private func showQuickMenu(anchoredTo button: NSStatusBarButton) {
+        controller.captureExternalFrontmostAppIfNeeded()
         controller.refreshLoginStatus()
         let menu = buildQuickMenu()
         menu.delegate = self
@@ -172,9 +174,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
             presetItem.state = controller.state.activePreset == preset ? .on : .off
             presetSubmenu.addItem(presetItem)
         }
-        let presetMenuItem = NSMenuItem(title: "快捷场景预设", action: nil, keyEquivalent: "")
+        let presetMenuItem = NSMenuItem(title: "壁纸快捷预设", action: nil, keyEquivalent: "")
         presetMenuItem.submenu = presetSubmenu
         menu.addItem(presetMenuItem)
+
+        menu.addItem(.separator())
+
+        let focusEnableItem = NSMenuItem(title: "启用专注遮罩", action: #selector(toggleFocusEnabledFromMenu), keyEquivalent: "")
+        focusEnableItem.target = self
+        focusEnableItem.state = controller.state.snapshot.focusEnabled ? .on : .off
+        menu.addItem(focusEnableItem)
+
+        let systemBarsItem = NSMenuItem(
+            title: "同时压暗菜单栏与 Dock",
+            action: #selector(toggleSystemBarsFromMenu),
+            keyEquivalent: ""
+        )
+        systemBarsItem.target = self
+        if controller.state.snapshot.dimMenuBar && controller.state.snapshot.dimDock {
+            systemBarsItem.state = .on
+        } else if controller.state.snapshot.dimMenuBar || controller.state.snapshot.dimDock {
+            systemBarsItem.state = .mixed
+        } else {
+            systemBarsItem.state = .off
+        }
+        menu.addItem(systemBarsItem)
+
+        let scopeSubmenu = NSMenu()
+        for scope in FocusScope.allCases {
+            let scopeItem = NSMenuItem(
+                title: scope.title,
+                action: #selector(selectFocusScopeFromMenu(_:)),
+                keyEquivalent: ""
+            )
+            scopeItem.target = self
+            scopeItem.representedObject = scope.rawValue
+            scopeItem.state = controller.state.snapshot.focusScope == scope ? .on : .off
+            scopeSubmenu.addItem(scopeItem)
+        }
+        let scopeMenuItem = NSMenuItem(title: "聚焦范围", action: nil, keyEquivalent: "")
+        scopeMenuItem.submenu = scopeSubmenu
+        menu.addItem(scopeMenuItem)
+
+        let focusPresetSubmenu = NSMenu()
+        for preset in FocusPreset.allCases {
+            let item = NSMenuItem(
+                title: "\(preset.title) · \(preset.percentage)%",
+                action: #selector(selectFocusPresetFromMenu(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = preset.rawValue
+            item.state = controller.state.activeFocusPreset == preset ? .on : .off
+            focusPresetSubmenu.addItem(item)
+        }
+        let focusPresetMenuItem = NSMenuItem(title: "专注强度预设", action: nil, keyEquivalent: "")
+        focusPresetMenuItem.submenu = focusPresetSubmenu
+        menu.addItem(focusPresetMenuItem)
 
         menu.addItem(.separator())
 
@@ -213,6 +269,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
         guard let rawValue = sender.representedObject as? String,
               let preset = DimmingPreset(rawValue: rawValue) else { return }
         controller.applyPreset(preset)
+    }
+
+    @objc private func toggleFocusEnabledFromMenu() {
+        controller.toggleFocusEnabled()
+    }
+
+    @objc private func toggleSystemBarsFromMenu() {
+        controller.toggleDimSystemBarsTogether()
+    }
+
+    @objc private func selectFocusScopeFromMenu(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String,
+              let scope = FocusScope(rawValue: rawValue) else { return }
+        controller.setFocusScope(scope)
+    }
+
+    @objc private func selectFocusPresetFromMenu(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String,
+              let preset = FocusPreset(rawValue: rawValue) else { return }
+        controller.applyFocusPreset(preset)
     }
 
     @objc private func toggleLoginItemFromMenu() {

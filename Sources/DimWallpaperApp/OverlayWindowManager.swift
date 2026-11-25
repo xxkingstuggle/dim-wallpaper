@@ -11,8 +11,11 @@ import DimWallpaperCore
 final class DimWallpaperController: ObservableObject {
     @Published private(set) var state: DimmingEngineState
     @Published private(set) var hotKeyError: String?
+    @Published private(set) var focusHotKeyError: String?
     @Published private(set) var loginStatus: SMAppService.Status
     @Published private(set) var loginError: String?
+    @Published private(set) var trackedExternalApp: FocusAppIdentity?
+    @Published private(set) var isFocusPausedByExcludedApp = false
 
     var onStatusAppearanceChanged: (() -> Void)?
 
@@ -23,6 +26,12 @@ final class DimWallpaperController: ObservableObject {
     private let hotKeyManager = GlobalHotKeyManager()
     private var windows: [CGDirectDisplayID: NSWindow] = [:]
     private var animationTokens: [CGDirectDisplayID: UInt64] = [:]
+    private var focusGroups: [CGDirectDisplayID: FocusDisplayOverlayGroup] = [:]
+    private var focusAnimationTokens: [CGDirectDisplayID: UInt64] = [:]
+    private var lastFocusFingerprints: [CGDirectDisplayID: FocusDisplayRenderFingerprint] = [:]
+    private var focusTargetResolver: FocusTargetResolver
+    private var focusPollTimer: Timer?
+    private var isScreenAsleep = false
     private var appearanceObserver: NSKeyValueObservation?
     private var notificationTokens: [NSObjectProtocol] = []
     private var workspaceTokens: [NSObjectProtocol] = []
@@ -31,12 +40,29 @@ final class DimWallpaperController: ObservableObject {
     private var pendingAppearanceSync: DispatchWorkItem?
     private var pendingPersistenceSave: DispatchWorkItem?
     private var isStarted = false
+    private let selfPID: Int32 = ProcessInfo.processInfo.processIdentifier
 
     private let desktopLevel: NSWindow.Level = {
         let baseLevel = CGWindowLevelForKey(.desktopWindow)
         let iconLevel = CGWindowLevelForKey(.desktopIconWindow)
         let resolved = OverlayWindowPolicy.resolvedWindowLevel(desktopLevel: baseLevel, desktopIconLevel: iconLevel)
         assert(OverlayWindowPolicy.isStrictlyBetweenDesktopAndIcons(level: resolved, desktopLevel: baseLevel, desktopIconLevel: iconLevel))
+        return NSWindow.Level(rawValue: resolved)
+    }()
+
+    private let focusNormalLevel = NSWindow.Level(rawValue: FocusWindowLevels.normalFocusLevel)
+
+    private let focusMenuBarLevel: NSWindow.Level = {
+        let statusBar = max(CGWindowLevelForKey(.statusWindow), CGWindowLevelForKey(.mainMenuWindow))
+        let popUpMenu = CGWindowLevelForKey(.popUpMenuWindow)
+        let resolved = FocusWindowLevels.menuBarOverlayLevel(statusBarLevel: statusBar, popUpMenuLevel: popUpMenu)
+        return NSWindow.Level(rawValue: resolved)
+    }()
+
+    private let focusDockLevel: NSWindow.Level = {
+        let dock = CGWindowLevelForKey(.dockWindow)
+        let mainMenu = CGWindowLevelForKey(.mainMenuWindow)
+        let resolved = FocusWindowLevels.dockOverlayLevel(dockLevel: dock, mainMenuLevel: mainMenu)
         return NSWindow.Level(rawValue: resolved)
     }()
 
@@ -52,6 +78,7 @@ final class DimWallpaperController: ObservableObject {
             displays: initialDisplays
         )
         self.loginStatus = loginController.status
+        self.focusTargetResolver = FocusTargetResolver(selfPID: ProcessInfo.processInfo.processIdentifier)
     }
 
     func start() {
@@ -61,17 +88,23 @@ final class DimWallpaperController: ObservableObject {
         state.isDarkAppearance = Self.currentSystemIsDark()
         state.updateDisplays(Self.captureOnlineDisplays())
 
-        hotKeyManager.onPressed = { [weak self] in
+        hotKeyManager.setHandler(for: .wallpaper) { [weak self] in
             self?.toggleEnabled()
+        }
+        hotKeyManager.setHandler(for: .focus) { [weak self] in
+            self?.toggleFocusEnabled()
         }
         syncHotKeyRegistration()
 
         loginController.setupOnFirstLaunchIfNeeded(store: store, disabled: launchOptions.disableLoginItemSetup)
         refreshLoginStatus()
 
+        captureExternalFrontmostAppIfNeeded()
         installObservers()
         rebuildWindows(forceDisplay: true)
         applyOverlays(animated: false)
+        refreshFocusOverlays(animated: false, forceUpdate: true)
+        syncFocusPollingTimer()
         onStatusAppearanceChanged?()
     }
 
@@ -80,6 +113,7 @@ final class DimWallpaperController: ObservableObject {
         pendingScreenSync = nil
         pendingAppearanceSync?.cancel()
         pendingAppearanceSync = nil
+        stopFocusPollingTimer()
         flushPersistence()
 
         appearanceObserver?.invalidate()
@@ -111,6 +145,8 @@ final class DimWallpaperController: ObservableObject {
         }
         windows.removeAll()
         animationTokens.removeAll()
+
+        tearDownAllFocusOverlays()
         isStarted = false
     }
 
@@ -157,6 +193,9 @@ final class DimWallpaperController: ObservableObject {
         state.setTint(value)
         persistImmediately()
         applyOverlays(animated: true)
+        if state.snapshot.focusTint == .followWallpaper {
+            refreshFocusOverlays(animated: true, forceUpdate: true)
+        }
         onStatusAppearanceChanged?()
     }
 
@@ -176,6 +215,136 @@ final class DimWallpaperController: ObservableObject {
         syncHotKeyRegistration()
     }
 
+    func setFocusEnabled(_ value: Bool) {
+        guard state.snapshot.focusEnabled != value else { return }
+        state.setFocusEnabled(value)
+        persistImmediately()
+        captureExternalFrontmostAppIfNeeded()
+        if value {
+            refreshFocusOverlays(animated: true, forceUpdate: true)
+        } else {
+            isFocusPausedByExcludedApp = false
+            hideAndReleaseFocusOverlays(animated: true)
+        }
+        syncFocusPollingTimer()
+        onStatusAppearanceChanged?()
+    }
+
+    func toggleFocusEnabled() {
+        setFocusEnabled(!state.snapshot.focusEnabled)
+    }
+
+    func setFocusIntensity(_ value: Double) {
+        let clamped = FocusBounds.clampedIntensity(value)
+        guard abs(state.snapshot.focusIntensity - clamped) > 0.0001 else { return }
+        state.setFocusIntensity(clamped)
+        scheduleDebouncedPersistence()
+        refreshFocusOverlays(animated: false, forceUpdate: true)
+        onStatusAppearanceChanged?()
+    }
+
+    func applyFocusPreset(_ preset: FocusPreset) {
+        state.applyFocusPreset(preset)
+        persistImmediately()
+        captureExternalFrontmostAppIfNeeded()
+        refreshFocusOverlays(animated: true, forceUpdate: true)
+        syncFocusPollingTimer()
+        onStatusAppearanceChanged?()
+    }
+
+    func setFocusTint(_ value: FocusTintOption) {
+        guard state.snapshot.focusTint != value else { return }
+        state.setFocusTint(value)
+        persistImmediately()
+        refreshFocusOverlays(animated: true, forceUpdate: true)
+        onStatusAppearanceChanged?()
+    }
+
+    func setFocusScope(_ value: FocusScope) {
+        guard state.snapshot.focusScope != value else { return }
+        state.setFocusScope(value)
+        persistImmediately()
+        refreshFocusOverlays(animated: true, forceUpdate: true)
+        onStatusAppearanceChanged?()
+    }
+
+    func setDimMenuBar(_ value: Bool) {
+        guard state.snapshot.dimMenuBar != value else { return }
+        state.setDimMenuBar(value)
+        persistImmediately()
+        refreshFocusOverlays(animated: true, forceUpdate: true)
+        onStatusAppearanceChanged?()
+    }
+
+    func setDimDock(_ value: Bool) {
+        guard state.snapshot.dimDock != value else { return }
+        state.setDimDock(value)
+        persistImmediately()
+        refreshFocusOverlays(animated: true, forceUpdate: true)
+        onStatusAppearanceChanged?()
+    }
+
+    func applyFocusSystemBarPreset(_ preset: FocusSystemBarPreset) {
+        state.applyFocusSystemBarPreset(preset)
+        persistImmediately()
+        refreshFocusOverlays(animated: true, forceUpdate: true)
+        onStatusAppearanceChanged?()
+    }
+
+    func toggleDimSystemBarsTogether() {
+        let bothEnabled = state.snapshot.dimMenuBar && state.snapshot.dimDock
+        applyFocusSystemBarPreset(bothEnabled ? .keepSystemBars : .dimAll)
+    }
+
+    func setFocusMultiDisplayPolicy(_ value: FocusMultiDisplayPolicy) {
+        guard state.snapshot.focusMultiDisplayPolicy != value else { return }
+        state.setFocusMultiDisplayPolicy(value)
+        persistImmediately()
+        refreshFocusOverlays(animated: true, forceUpdate: true)
+        onStatusAppearanceChanged?()
+    }
+
+    func setFocusTransitionSpeed(_ value: FocusTransitionSpeed) {
+        guard state.snapshot.focusTransitionSpeed != value else { return }
+        state.setFocusTransitionSpeed(value)
+        persistImmediately()
+        onStatusAppearanceChanged?()
+    }
+
+    func setFocusExcludedApp(_ bundleID: String, excluded: Bool) {
+        let currentlyExcluded = state.isAppExcludedFromFocus(bundleID: bundleID)
+        guard currentlyExcluded != excluded else { return }
+        state.setFocusExcludedApp(bundleID, excluded: excluded)
+        persistImmediately()
+        refreshFocusOverlays(animated: true, forceUpdate: true)
+        syncFocusPollingTimer()
+        onStatusAppearanceChanged?()
+    }
+
+    func toggleTrackedAppFocusExclusion() {
+        guard let bundleID = trackedExternalApp?.bundleIdentifier, !bundleID.isEmpty else { return }
+        let excluded = state.isAppExcludedFromFocus(bundleID: bundleID)
+        setFocusExcludedApp(bundleID, excluded: !excluded)
+    }
+
+    func setFocusHotKeyEnabled(_ value: Bool) {
+        guard state.snapshot.focusHotKeyEnabled != value else { return }
+        state.setFocusHotKeyEnabled(value)
+        persistImmediately()
+        syncHotKeyRegistration()
+    }
+
+    func captureExternalFrontmostAppIfNeeded() {
+        let current = Self.currentFrontmostAppIdentity()
+        _ = focusTargetResolver.resolve(
+            currentFrontmost: current,
+            excludedBundleIDs: state.snapshot.focusExcludedBundleIDs
+        )
+        if trackedExternalApp != focusTargetResolver.lastExternalFrontmostApp {
+            trackedExternalApp = focusTargetResolver.lastExternalFrontmostApp
+        }
+    }
+
     func toggleLoginItem() {
         loginError = loginController.toggle()
         refreshLoginStatus()
@@ -189,6 +358,8 @@ final class DimWallpaperController: ObservableObject {
         state.updateDisplays(Self.captureOnlineDisplays())
         rebuildWindows(forceDisplay: true)
         applyOverlays(animated: false)
+        refreshFocusOverlays(animated: false, forceUpdate: true)
+        syncFocusPollingTimer()
         onStatusAppearanceChanged?()
     }
 
@@ -237,16 +408,49 @@ final class DimWallpaperController: ObservableObject {
         let wakeNames: [NSNotification.Name] = [
             NSWorkspace.didWakeNotification,
             NSWorkspace.screensDidWakeNotification,
-            NSWorkspace.activeSpaceDidChangeNotification,
         ]
         for name in wakeNames {
             let token = workspaceCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    self?.scheduleScreenSync(delay: 0.12)
+                    self?.handleScreensDidWake()
                 }
             }
             workspaceTokens.append(token)
         }
+
+        let spaceToken = workspaceCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.scheduleScreenSync(delay: 0.12)
+                self?.refreshFocusOverlays(animated: true, forceUpdate: true)
+            }
+        }
+        workspaceTokens.append(spaceToken)
+
+        let activateToken = workspaceCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleFrontmostApplicationChanged()
+            }
+        }
+        workspaceTokens.append(activateToken)
+
+        let sleepToken = workspaceCenter.addObserver(
+            forName: NSWorkspace.screensDidSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleScreensDidSleep()
+            }
+        }
+        workspaceTokens.append(sleepToken)
 
         let themeToken = DistributedNotificationCenter.default().addObserver(
             forName: NSNotification.Name("AppleInterfaceThemeChangedNotification"),
@@ -274,6 +478,8 @@ final class DimWallpaperController: ObservableObject {
             self.state.updateDisplays(Self.captureOnlineDisplays())
             self.rebuildWindows(forceDisplay: true)
             self.applyOverlays(animated: false)
+            self.refreshFocusOverlays(animated: false, forceUpdate: true)
+            self.syncFocusPollingTimer()
             self.onStatusAppearanceChanged?()
         }
         pendingScreenSync = work
@@ -296,8 +502,451 @@ final class DimWallpaperController: ObservableObject {
     }
 
     private func syncHotKeyRegistration() {
-        hotKeyManager.configure(enabled: state.snapshot.hotKeyEnabled, binding: state.snapshot.hotKeyBinding)
-        hotKeyError = hotKeyManager.lastError
+        hotKeyManager.configure(
+            slot: .wallpaper,
+            enabled: state.snapshot.hotKeyEnabled,
+            binding: state.snapshot.hotKeyBinding
+        )
+        hotKeyManager.configure(
+            slot: .focus,
+            enabled: state.snapshot.focusHotKeyEnabled,
+            binding: state.snapshot.focusHotKeyBinding
+        )
+        hotKeyError = hotKeyManager.lastError(for: .wallpaper)
+        focusHotKeyError = hotKeyManager.lastError(for: .focus)
+    }
+
+    // MARK: - Focus Mode Lifecycle & Window Hosting
+
+    private func handleFrontmostApplicationChanged() {
+        captureExternalFrontmostAppIfNeeded()
+        guard state.isFocusGloballyActive, !isScreenAsleep else { return }
+        refreshFocusOverlays(animated: true, forceUpdate: false)
+        syncFocusPollingTimer()
+    }
+
+    private func handleScreensDidSleep() {
+        isScreenAsleep = true
+        stopFocusPollingTimer()
+        tearDownAllFocusOverlays()
+    }
+
+    private func handleScreensDidWake() {
+        isScreenAsleep = false
+        scheduleScreenSync(delay: 0.16)
+    }
+
+    private func syncFocusPollingTimer() {
+        let shouldPoll = isStarted
+            && state.isFocusGloballyActive
+            && !isScreenAsleep
+            && !isFocusPausedByExcludedApp
+        if shouldPoll {
+            guard focusPollTimer == nil else { return }
+            let timer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.refreshFocusOverlays(animated: false, forceUpdate: false)
+                }
+            }
+            timer.tolerance = 0.08
+            focusPollTimer = timer
+        } else {
+            stopFocusPollingTimer()
+        }
+    }
+
+    private func stopFocusPollingTimer() {
+        focusPollTimer?.invalidate()
+        focusPollTimer = nil
+    }
+
+    private func refreshFocusOverlays(animated: Bool, forceUpdate: Bool) {
+        guard isStarted else { return }
+
+        let currentFrontmost = Self.currentFrontmostAppIdentity()
+        let targetResolution = focusTargetResolver.resolve(
+            currentFrontmost: currentFrontmost,
+            excludedBundleIDs: state.snapshot.focusExcludedBundleIDs
+        )
+        if trackedExternalApp != focusTargetResolver.lastExternalFrontmostApp {
+            trackedExternalApp = focusTargetResolver.lastExternalFrontmostApp
+        }
+
+        let pausedByExclusion: Bool
+        let targetPID: Int32?
+        switch targetResolution {
+        case .active(let identity):
+            pausedByExclusion = false
+            targetPID = identity.pid
+        case .pausedByExcludedApp:
+            pausedByExclusion = true
+            targetPID = nil
+        case .unavailable:
+            pausedByExclusion = false
+            targetPID = nil
+        }
+        if isFocusPausedByExcludedApp != pausedByExclusion {
+            isFocusPausedByExcludedApp = pausedByExclusion
+            onStatusAppearanceChanged?()
+        }
+
+        guard state.isFocusGloballyActive, !isScreenAsleep, !pausedByExclusion else {
+            hideAndReleaseFocusOverlays(animated: animated && !isScreenAsleep)
+            return
+        }
+
+        let screenGeometries = Self.captureScreenGeometries()
+        let observedWindows = Self.captureOnScreenWindows()
+        let plans = FocusWindowOrderPlanner.plan(
+            screens: screenGeometries,
+            windows: observedWindows,
+            targetPID: targetPID,
+            selfPID: selfPID,
+            isEnabled: state.isFocusGloballyActive,
+            intensity: state.snapshot.focusIntensity,
+            scope: state.snapshot.focusScope,
+            dimMenuBar: state.snapshot.dimMenuBar,
+            dimDock: state.snapshot.dimDock,
+            multiDisplayPolicy: state.snapshot.focusMultiDisplayPolicy
+        )
+
+        let onlineIDs = Set(screenGeometries.map(\.displayID))
+        let staleFocusIDs = focusGroups.keys.filter { !onlineIDs.contains($0) }
+        for staleID in staleFocusIDs {
+            removeFocusGroup(for: staleID)
+        }
+
+        let screensByID = Self.screensByDisplayID()
+        let resolvedTint = state.resolvedFocusTint
+        let color = overlayColor(for: resolvedTint)
+        let duration = animated
+            ? state.snapshot.focusTransitionSpeed.resolvedDuration(
+                reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            )
+            : 0.0
+
+        for plan in plans {
+            let fingerprint = FocusDisplayRenderFingerprint(
+                placement: plan.placement,
+                mainRect: plan.partition.mainRect,
+                menuBarStripRect: plan.partition.menuBarStripRect,
+                dockStripRects: plan.partition.dockStripRects,
+                targetAlpha: plan.targetAlpha,
+                tint: resolvedTint
+            )
+
+            if !forceUpdate, lastFocusFingerprints[plan.displayID] == fingerprint {
+                continue
+            }
+            lastFocusFingerprints[plan.displayID] = fingerprint
+
+            guard let screen = screensByID[plan.displayID] else { continue }
+            applyFocusPlan(plan, on: screen, color: color, duration: duration)
+        }
+    }
+
+    private func applyFocusPlan(
+        _ plan: FocusDisplayPlan,
+        on screen: NSScreen,
+        color: NSColor,
+        duration: TimeInterval
+    ) {
+        let displayID = plan.displayID
+        let nextToken = (focusAnimationTokens[displayID] ?? 0) &+ 1
+        focusAnimationTokens[displayID] = nextToken
+
+        guard plan.shouldShow else {
+            guard let group = focusGroups[displayID] else { return }
+            fadeOutAndReleaseFocusGroup(group, displayID: displayID, token: nextToken, duration: duration)
+            return
+        }
+
+        let group = focusGroups[displayID] ?? {
+            let created = FocusDisplayOverlayGroup(
+                mainWindow: makeFocusWindow(for: screen, frame: plan.partition.mainRect, level: focusNormalLevel, color: color)
+            )
+            focusGroups[displayID] = created
+            return created
+        }()
+
+        let targetAlpha = CGFloat(plan.targetAlpha)
+
+        let mainWindow = group.mainWindow
+        mainWindow.level = focusNormalLevel
+        mainWindow.backgroundColor = color
+        if plan.partition.mainRect.width > FocusBounds.minimumStripThickness,
+           plan.partition.mainRect.height > FocusBounds.minimumStripThickness {
+            if !mainWindow.frame.equalTo(plan.partition.mainRect) {
+                mainWindow.setFrame(plan.partition.mainRect, display: false)
+            }
+            let wasVisible = mainWindow.isVisible
+            if !wasVisible {
+                mainWindow.alphaValue = duration > 0 ? 0 : targetAlpha
+            }
+            switch plan.placement {
+            case .orderBelow(let windowNumber):
+                mainWindow.order(.below, relativeTo: windowNumber)
+            case .orderFrontNormal:
+                mainWindow.orderFrontRegardless()
+            case .hidden:
+                mainWindow.orderOut(nil)
+            }
+            animateWindowAlpha(mainWindow, to: targetAlpha, duration: duration)
+        } else {
+            mainWindow.alphaValue = 0
+            mainWindow.orderOut(nil)
+        }
+
+        if let menuBarRect = plan.partition.menuBarStripRect {
+            let menuWindow = group.menuBarWindow ?? makeFocusWindow(
+                for: screen,
+                frame: menuBarRect,
+                level: focusMenuBarLevel,
+                color: color
+            )
+            group.menuBarWindow = menuWindow
+            menuWindow.level = focusMenuBarLevel
+            menuWindow.backgroundColor = color
+            if !menuWindow.frame.equalTo(menuBarRect) {
+                menuWindow.setFrame(menuBarRect, display: false)
+            }
+            if !menuWindow.isVisible {
+                menuWindow.alphaValue = duration > 0 ? 0 : targetAlpha
+            }
+            menuWindow.orderFrontRegardless()
+            animateWindowAlpha(menuWindow, to: targetAlpha, duration: duration)
+        } else if let existingMenuWindow = group.menuBarWindow {
+            group.menuBarWindow = nil
+            existingMenuWindow.alphaValue = 0
+            existingMenuWindow.orderOut(nil)
+            existingMenuWindow.close()
+        }
+
+        let desiredDockRects = plan.partition.dockStripRects
+        while group.dockWindows.count > desiredDockRects.count {
+            let extra = group.dockWindows.removeLast()
+            extra.alphaValue = 0
+            extra.orderOut(nil)
+            extra.close()
+        }
+        for (index, dockRect) in desiredDockRects.enumerated() {
+            let dockWindow: NSWindow
+            if index < group.dockWindows.count {
+                dockWindow = group.dockWindows[index]
+            } else {
+                let created = makeFocusWindow(for: screen, frame: dockRect, level: focusDockLevel, color: color)
+                group.dockWindows.append(created)
+                dockWindow = created
+            }
+            dockWindow.level = focusDockLevel
+            dockWindow.backgroundColor = color
+            if !dockWindow.frame.equalTo(dockRect) {
+                dockWindow.setFrame(dockRect, display: false)
+            }
+            if !dockWindow.isVisible {
+                dockWindow.alphaValue = duration > 0 ? 0 : targetAlpha
+            }
+            dockWindow.orderFrontRegardless()
+            animateWindowAlpha(dockWindow, to: targetAlpha, duration: duration)
+        }
+    }
+
+    private func hideAndReleaseFocusOverlays(animated: Bool) {
+        guard !focusGroups.isEmpty else {
+            lastFocusFingerprints.removeAll()
+            return
+        }
+        let duration = animated
+            ? state.snapshot.focusTransitionSpeed.resolvedDuration(
+                reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            )
+            : 0.0
+        for (displayID, group) in focusGroups {
+            let nextToken = (focusAnimationTokens[displayID] ?? 0) &+ 1
+            focusAnimationTokens[displayID] = nextToken
+            lastFocusFingerprints.removeValue(forKey: displayID)
+            fadeOutAndReleaseFocusGroup(group, displayID: displayID, token: nextToken, duration: duration)
+        }
+    }
+
+    private func fadeOutAndReleaseFocusGroup(
+        _ group: FocusDisplayOverlayGroup,
+        displayID: CGDirectDisplayID,
+        token: UInt64,
+        duration: TimeInterval
+    ) {
+        let allWindows = group.allWindows
+        if duration <= 0.001 {
+            for window in allWindows {
+                window.alphaValue = 0
+                window.orderOut(nil)
+                window.close()
+            }
+            if focusGroups[displayID] === group {
+                focusGroups.removeValue(forKey: displayID)
+            }
+            return
+        }
+
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = duration
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            context.allowsImplicitAnimation = true
+            for window in allWindows {
+                window.animator().alphaValue = 0
+            }
+        }, completionHandler: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, self.focusAnimationTokens[displayID] == token else { return }
+                for window in allWindows {
+                    window.alphaValue = 0
+                    window.orderOut(nil)
+                    window.close()
+                }
+                if self.focusGroups[displayID] === group {
+                    self.focusGroups.removeValue(forKey: displayID)
+                }
+            }
+        })
+    }
+
+    private func removeFocusGroup(for displayID: CGDirectDisplayID) {
+        focusAnimationTokens[displayID] = (focusAnimationTokens[displayID] ?? 0) &+ 1
+        lastFocusFingerprints.removeValue(forKey: displayID)
+        guard let group = focusGroups.removeValue(forKey: displayID) else { return }
+        for window in group.allWindows {
+            window.alphaValue = 0
+            window.orderOut(nil)
+            window.close()
+        }
+    }
+
+    private func tearDownAllFocusOverlays() {
+        let displayIDs = Array(focusGroups.keys)
+        for displayID in displayIDs {
+            removeFocusGroup(for: displayID)
+        }
+        focusGroups.removeAll()
+        focusAnimationTokens.removeAll()
+        lastFocusFingerprints.removeAll()
+    }
+
+    private func animateWindowAlpha(_ window: NSWindow, to targetAlpha: CGFloat, duration: TimeInterval) {
+        if duration > 0.001 {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = duration
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                context.allowsImplicitAnimation = true
+                window.animator().alphaValue = targetAlpha
+            }
+        } else {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                window.animator().alphaValue = targetAlpha
+            }
+            window.alphaValue = targetAlpha
+        }
+    }
+
+    private func makeFocusWindow(
+        for screen: NSScreen,
+        frame: CGRect,
+        level: NSWindow.Level,
+        color: NSColor
+    ) -> NSWindow {
+        let window = NSWindow(
+            contentRect: frame,
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: true,
+            screen: screen
+        )
+        window.level = level
+        window.backgroundColor = color
+        window.alphaValue = 0
+        window.isOpaque = false
+        window.hasShadow = false
+        window.ignoresMouseEvents = true
+        window.isMovable = false
+        window.canHide = false
+        window.isExcludedFromWindowsMenu = true
+        window.isReleasedWhenClosed = false
+        window.animationBehavior = .none
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+        window.setFrame(frame, display: false)
+        return window
+    }
+
+    private static func currentFrontmostAppIdentity() -> FocusAppIdentity? {
+        guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
+        let name = app.localizedName ?? app.bundleIdentifier ?? "PID \(app.processIdentifier)"
+        return FocusAppIdentity(
+            pid: app.processIdentifier,
+            bundleIdentifier: app.bundleIdentifier,
+            localizedName: name
+        )
+    }
+
+    private static func screensByDisplayID() -> [CGDirectDisplayID: NSScreen] {
+        var map: [CGDirectDisplayID: NSScreen] = [:]
+        for screen in NSScreen.screens {
+            if let displayID = displayID(for: screen) {
+                map[displayID] = screen
+            }
+        }
+        return map
+    }
+
+    private static func captureScreenGeometries() -> [ScreenGeometry] {
+        let screens = NSScreen.screens
+        var result: [ScreenGeometry] = []
+        for (index, screen) in screens.enumerated() {
+            guard let displayID = displayID(for: screen) else { continue }
+            result.append(
+                ScreenGeometry(
+                    displayID: displayID,
+                    frame: screen.frame,
+                    visibleFrame: screen.visibleFrame,
+                    isPrimary: index == 0
+                )
+            )
+        }
+        return result
+    }
+
+    private static func captureOnScreenWindows() -> [ObservedWindowInfo] {
+        guard let rawList = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] else {
+            return []
+        }
+
+        var result: [ObservedWindowInfo] = []
+        result.reserveCapacity(rawList.count)
+
+        for entry in rawList {
+            guard let windowNumber = (entry[kCGWindowNumber as String] as? NSNumber)?.intValue,
+                  let ownerPID = (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+                  let boundsDict = entry[kCGWindowBounds as String] as? [String: Any],
+                  let cgBounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary) else {
+                continue
+            }
+            let layer = (entry[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
+            let alpha = (entry[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1.0
+            let isOnScreen = (entry[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue ?? true
+            result.append(
+                ObservedWindowInfo(
+                    windowNumber: windowNumber,
+                    ownerPID: ownerPID,
+                    layer: layer,
+                    alpha: alpha,
+                    cgBounds: cgBounds,
+                    isOnScreen: isOnScreen
+                )
+            )
+        }
+        return result
     }
 
     // MARK: - Overlay Windows
@@ -362,7 +1011,7 @@ final class DimWallpaperController: ObservableObject {
         window.isExcludedFromWindowsMenu = true
         window.isReleasedWhenClosed = false
         window.animationBehavior = .none
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
         window.setFrame(screen.frame, display: false)
         return window
     }
@@ -391,6 +1040,7 @@ final class DimWallpaperController: ObservableObject {
 
     private func applyOverlays(animated: Bool) {
         let color = overlayColor(for: state.snapshot.tint)
+        let shouldAnimate = animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         for (displayID, window) in windows {
             let decision = state.decision(for: displayID)
             let nextToken = (animationTokens[displayID] ?? 0) &+ 1
@@ -402,12 +1052,12 @@ final class DimWallpaperController: ObservableObject {
             if decision.shouldShowWindow {
                 let targetAlpha = CGFloat(decision.targetAlpha)
                 if !window.isVisible {
-                    window.alphaValue = animated ? 0 : targetAlpha
+                    window.alphaValue = shouldAnimate ? 0 : targetAlpha
                     window.orderFrontRegardless()
                 } else {
                     window.orderFrontRegardless()
                 }
-                if animated {
+                if shouldAnimate {
                     NSAnimationContext.runAnimationGroup { context in
                         context.duration = 0.28
                         context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
@@ -425,7 +1075,7 @@ final class DimWallpaperController: ObservableObject {
                 if !window.isVisible && window.alphaValue <= CGFloat(DimmingBounds.visibilityEpsilon) {
                     continue
                 }
-                if animated {
+                if shouldAnimate {
                     NSAnimationContext.runAnimationGroup({ context in
                         context.duration = 0.24
                         context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
@@ -451,4 +1101,33 @@ final class DimWallpaperController: ObservableObject {
             }
         }
     }
+}
+
+@MainActor
+private final class FocusDisplayOverlayGroup {
+    let mainWindow: NSWindow
+    var menuBarWindow: NSWindow?
+    var dockWindows: [NSWindow] = []
+
+    init(mainWindow: NSWindow) {
+        self.mainWindow = mainWindow
+    }
+
+    var allWindows: [NSWindow] {
+        var list: [NSWindow] = [mainWindow]
+        if let menuBarWindow {
+            list.append(menuBarWindow)
+        }
+        list.append(contentsOf: dockWindows)
+        return list
+    }
+}
+
+private struct FocusDisplayRenderFingerprint: Equatable {
+    let placement: FocusWindowPlacement
+    let mainRect: CGRect
+    let menuBarStripRect: CGRect?
+    let dockStripRects: [CGRect]
+    let targetAlpha: Double
+    let tint: DimmingTint
 }
