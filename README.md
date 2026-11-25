@@ -20,20 +20,19 @@
   <a href="https://github.com/xxkingstuggle/dim-wallpaper/issues">问题反馈</a>
 </p>
 
-原生 Swift + AppKit 编写，无第三方依赖，无常驻守护进程，仅驻留一个菜单栏图标。
+原生 Swift + AppKit + SwiftUI 编写，零第三方依赖，无常驻守护进程，仅驻留一个菜单栏图标。
 
 ## 原理
 
-在每个显示器上铺一层**不可见交互的纯黑窗口**，窗口层级设为
-`CGWindowLevelForKey(.desktopWindow)`——也就是壁纸之上、Finder 桌面图标和所有应用窗口之下。
-调整这层窗口的 alpha 就等于给壁纸加一层灰膜：
+在每个显示器上铺一层**不可见交互的调光遮罩窗口**，窗口层级严格落在
+`CGWindowLevelForKey(.desktopWindow) + 1`（位于壁纸之上、严格低于 `CGWindowLevelForKey(.desktopIconWindow)` 桌面图标层）：
 
 - 应用窗口完全不受影响（不透明白窗实测：开关前后像素完全相同）
 - 菜单栏和 Dock 是半透明材质，会透出背后的壁纸，所以壁纸变暗时它们看起来也会略暗一点——这是材质特性，不是被盖住
 - 不需要修改壁纸文件，也不碰 `com.apple.desktop` / wallpaper 数据库
-- 跟随系统外观变化（`NSApp.effectiveAppearance` KVO + `AppleInterfaceThemeChangedNotification`）
-- 每个显示器一层窗口，`didChangeScreenParametersNotification` 时重建，分辨率变化自动跟随
-- `collectionBehavior = [.canJoinAllSpaces, .stationary]`：切 Space、进全屏都保持覆盖
+- 暂停或处于浅色待命时，淡出完成后自动 `orderOut` 卸载遮罩窗口，避免空闲占用 WindowServer 合成缓冲
+- 监听系统外观变化、显示器热插拔、休眠唤醒与空间切换并做短窗防抖，支持多显示器逐屏独立豁免
+- `collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]` 并开启 `canHide = false`：切 Space 或隐藏应用时不丢失覆盖
 
 > 为什么不做「生成一张调暗的图再 setDesktopImageURL」：那会把用户的壁纸换成另一份文件，
 > 系统设置里的壁纸条目会被改写，换壁纸后还得重新同步。叠加窗口方案完全不动系统状态。
@@ -48,13 +47,8 @@
 | ☀️ | 浅色模式（或已关闭深色限制），保持原色 |
 | 🚫 | 已暂停 |
 
-菜单项：
-
-- **启用壁纸调暗** — 总开关
-- **仅在深色模式下生效** — 关掉后浅色模式也调暗
-- **调暗强度** — 5%–80% 滑杆，实时生效
-- **开机自动启动** — 由 `SMAppService` 管理，可在「系统设置 → 通用 → 登录项」里看到
-- **退出 DimWallpaper**
+- **左键点击状态栏图标**：弹出原生毛玻璃控制中心，包含 16:10 实时桌面压暗微缩预览、5%–80% 连续滑杆、快捷场景预设（轻柔 25% / 专注 45% / 深夜 65% / 极暗 80%）、色温滤镜（中性黑 / 暖夜 / 深蓝夜）、深色模式联动、逐显示器独立开关、零权限全局切换快捷键（`⌥⌘D`，Carbon `RegisterEventHotKey`）及开机自启状态，完整适配浅/深色与「降低透明度」降级。
+- **右键（或 Control + 左键）点击状态栏图标**：弹出极速菜单（一键开关、场景预设、登录项、`⌘Q` 退出）。
 
 设置用 `UserDefaults` 保存在 `~/Library/Preferences/local.zjx.DimWallpaper.plist`。
 
@@ -70,6 +64,7 @@
 ```bash
 git clone https://github.com/xxkingstuggle/dim-wallpaper.git
 cd dim-wallpaper
+swift test
 ./build.sh
 cp -R dist/DimWallpaper.app ~/Applications/
 open ~/Applications/DimWallpaper.app
@@ -82,8 +77,17 @@ open ~/Applications/DimWallpaper.app
 
 ```bash
 ~/Applications/DimWallpaper.app/Contents/MacOS/DimWallpaper --status
-# enabled=true intensity=0.4 darkOnly=true loginItemStatus=1
+# enabled=true intensity=0.4 darkOnly=true tint=neutral hotKeyEnabled=true displays=1 loginItemStatus=1
 # loginItemStatus: 0=notRegistered 1=enabled 2=requiresApproval 3=notFound
+
+# 输出完整 JSON（含在线显示器列表、色温、快捷键与隔离 suite 信息）
+~/Applications/DimWallpaper.app/Contents/MacOS/DimWallpaper --status-json
+
+# 隔离沙箱运行参数（不触碰日用偏好与登录项）
+dist/DimWallpaper.app/Contents/MacOS/DimWallpaper \
+  --defaults-suite local.zjx.DimWallpaper.sandbox \
+  --no-login-item \
+  --allow-multiple-instances
 ```
 
 ## 卸载
@@ -112,7 +116,7 @@ defaults delete local.zjx.DimWallpaper
 - 重复 `open` 只保留一个实例
 - 菜单可见、状态条目正常出现（开启前后对比截图确认）
 
-未实测：多显示器（本机只有一块屏）、通知中心覆盖、休眠唤醒后重连外接屏。这些走的是同一套窗口层级与 `didChangeScreenParametersNotification` 路径，但按「没测就不写进已验证」处理。
+未实测：多显示器（本机只有一块屏）、通知中心覆盖、休眠唤醒后重连外接屏，以及 `1.1.0` 新增毛玻璃控制中心、色温滤镜、逐屏开关与 `⌥⌘D` 全局快捷键（待真机动态验收后回填）。
 
 ## 开源许可
 

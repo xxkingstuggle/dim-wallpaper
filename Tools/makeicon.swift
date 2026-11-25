@@ -1,13 +1,35 @@
 import AppKit
 
-let size = 1024.0
-let image = NSImage(size: NSSize(width: size, height: size))
-image.lockFocus()
+let pixelSize = 1024
+let canvasSize = CGFloat(pixelSize)
 
-// Rounded-square background with a vertical gradient.
-let inset = 100.0
+guard
+    let bitmap = NSBitmapImageRep(
+        bitmapDataPlanes: nil,
+        pixelsWide: pixelSize,
+        pixelsHigh: pixelSize,
+        bitsPerSample: 8,
+        samplesPerPixel: 4,
+        hasAlpha: true,
+        isPlanar: false,
+        colorSpaceName: .deviceRGB,
+        bytesPerRow: 0,
+        bitsPerPixel: 0
+    ),
+    let context = NSGraphicsContext(bitmapImageRep: bitmap)
+else {
+    fatalError("failed to initialize 1024x1024 bitmap context")
+}
+
+bitmap.size = NSSize(width: canvasSize, height: canvasSize)
+NSGraphicsContext.saveGraphicsState()
+NSGraphicsContext.current = context
+context.shouldAntialias = true
+context.imageInterpolation = .high
+
+let inset: CGFloat = 100
 let background = NSBezierPath(
-    roundedRect: NSRect(x: inset, y: inset, width: size - inset * 2, height: size - inset * 2),
+    roundedRect: NSRect(x: inset, y: inset, width: canvasSize - inset * 2, height: canvasSize - inset * 2),
     xRadius: 190,
     yRadius: 190
 )
@@ -17,7 +39,6 @@ let gradient = NSGradient(colors: [
 ])
 gradient?.draw(in: background, angle: -90)
 
-// A pale disc, its lower half dimmed — the icon says "wallpaper, half brightness".
 let discRect = NSRect(x: 262, y: 272, width: 500, height: 500)
 let disc = NSBezierPath(ovalIn: discRect)
 NSColor(srgbRed: 0.95, green: 0.93, blue: 0.87, alpha: 1).setFill()
@@ -29,13 +50,9 @@ NSColor.black.withAlphaComponent(0.48).setFill()
 NSRect(x: 240, y: 240, width: 544, height: 282).fill()
 NSGraphicsContext.restoreGraphicsState()
 
-image.unlockFocus()
+NSGraphicsContext.restoreGraphicsState()
 
-guard
-    let tiff = image.tiffRepresentation,
-    let rep = NSBitmapImageRep(data: tiff),
-    let png = rep.representation(using: .png, properties: [:])
-else {
+guard let png = bitmap.representation(using: .png, properties: [:]) else {
     fatalError("icon render failed")
 }
 

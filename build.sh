@@ -6,8 +6,9 @@ APP_NAME="DimWallpaper"
 DIST="dist"
 APP="$DIST/$APP_NAME.app"
 ICONSET="$DIST/AppIcon.iconset"
+ARCH="${ARCH:-$(uname -m)}"
 
-if [[ -e "$DIST" ]]; then mv "$DIST" "$HOME/.Trash/dim-wallpaper-dist-$(date +%s)"; fi
+if [[ -e "$DIST" ]]; then /usr/bin/trash "$DIST"; fi
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$ICONSET"
 
 # --- icon ---
@@ -31,10 +32,15 @@ iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 
 # --- binary ---
 swiftc -O -whole-module-optimization \
-    -target arm64-apple-macos13.0 \
-    Sources/main.swift \
+    -swift-version 6 \
+    -target "${ARCH}-apple-macos13.0" \
+    Sources/DimWallpaperCore/*.swift \
+    Sources/DimWallpaperApp/*.swift \
     -o "$APP/Contents/MacOS/$APP_NAME" \
-    -framework AppKit -framework ServiceManagement
+    -framework AppKit \
+    -framework SwiftUI \
+    -framework ServiceManagement \
+    -framework Carbon
 
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
