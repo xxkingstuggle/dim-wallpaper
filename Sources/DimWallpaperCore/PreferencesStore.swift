@@ -10,6 +10,18 @@ public enum PreferenceKey {
     public static let hotKeyEnabled = "hotKeyEnabled"
     public static let hotKeyKeyCode = "hotKeyKeyCode"
     public static let hotKeyModifiers = "hotKeyModifiers"
+    public static let focusEnabled = "focusEnabled"
+    public static let focusIntensity = "focusIntensity"
+    public static let focusTint = "focusTint"
+    public static let focusScope = "focusScope"
+    public static let focusDimMenuBar = "focusDimMenuBar"
+    public static let focusDimDock = "focusDimDock"
+    public static let focusMultiDisplayPolicy = "focusMultiDisplayPolicy"
+    public static let focusTransitionSpeed = "focusTransitionSpeed"
+    public static let focusExcludedBundleIDs = "focusExcludedBundleIDs"
+    public static let focusHotKeyEnabled = "focusHotKeyEnabled"
+    public static let focusHotKeyKeyCode = "focusHotKeyKeyCode"
+    public static let focusHotKeyModifiers = "focusHotKeyModifiers"
 }
 
 public struct DimmingSnapshot: Equatable, Codable, Sendable {
@@ -20,6 +32,17 @@ public struct DimmingSnapshot: Equatable, Codable, Sendable {
     public var excludedDisplayIDs: Set<UInt32>
     public var hotKeyEnabled: Bool
     public var hotKeyBinding: HotKeyBinding
+    public var focusEnabled: Bool
+    public var focusIntensity: Double
+    public var focusTint: FocusTintOption
+    public var focusScope: FocusScope
+    public var dimMenuBar: Bool
+    public var dimDock: Bool
+    public var focusMultiDisplayPolicy: FocusMultiDisplayPolicy
+    public var focusTransitionSpeed: FocusTransitionSpeed
+    public var focusExcludedBundleIDs: Set<String>
+    public var focusHotKeyEnabled: Bool
+    public var focusHotKeyBinding: HotKeyBinding
 
     public init(
         enabled: Bool = true,
@@ -28,7 +51,18 @@ public struct DimmingSnapshot: Equatable, Codable, Sendable {
         tint: DimmingTint = .neutral,
         excludedDisplayIDs: Set<UInt32> = [],
         hotKeyEnabled: Bool = true,
-        hotKeyBinding: HotKeyBinding = .defaultToggle
+        hotKeyBinding: HotKeyBinding = .defaultToggle,
+        focusEnabled: Bool = false,
+        focusIntensity: Double = FocusBounds.defaultIntensity,
+        focusTint: FocusTintOption = .followWallpaper,
+        focusScope: FocusScope = .frontApplication,
+        dimMenuBar: Bool = false,
+        dimDock: Bool = false,
+        focusMultiDisplayPolicy: FocusMultiDisplayPolicy = .dimInactiveScreens,
+        focusTransitionSpeed: FocusTransitionSpeed = .gentle,
+        focusExcludedBundleIDs: Set<String> = [],
+        focusHotKeyEnabled: Bool = true,
+        focusHotKeyBinding: HotKeyBinding = .defaultFocusToggle
     ) {
         self.enabled = enabled
         self.intensity = DimmingBounds.clampedIntensity(intensity)
@@ -37,6 +71,60 @@ public struct DimmingSnapshot: Equatable, Codable, Sendable {
         self.excludedDisplayIDs = excludedDisplayIDs
         self.hotKeyEnabled = hotKeyEnabled
         self.hotKeyBinding = hotKeyBinding.isValid ? hotKeyBinding : .defaultToggle
+        self.focusEnabled = focusEnabled
+        self.focusIntensity = FocusBounds.clampedIntensity(focusIntensity)
+        self.focusTint = focusTint
+        self.focusScope = focusScope
+        self.dimMenuBar = dimMenuBar
+        self.dimDock = dimDock
+        self.focusMultiDisplayPolicy = focusMultiDisplayPolicy
+        self.focusTransitionSpeed = focusTransitionSpeed
+        self.focusExcludedBundleIDs = focusExcludedBundleIDs
+        self.focusHotKeyEnabled = focusHotKeyEnabled
+        self.focusHotKeyBinding = focusHotKeyBinding.isValid ? focusHotKeyBinding : .defaultFocusToggle
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let decodedEnabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        let decodedIntensity = try container.decodeIfPresent(Double.self, forKey: .intensity) ?? DimmingBounds.defaultIntensity
+        let decodedDarkOnly = try container.decodeIfPresent(Bool.self, forKey: .darkOnly) ?? true
+        let decodedTint = try container.decodeIfPresent(DimmingTint.self, forKey: .tint) ?? .neutral
+        let decodedExcludedDisplays = try container.decodeIfPresent(Set<UInt32>.self, forKey: .excludedDisplayIDs) ?? []
+        let decodedHotKeyEnabled = try container.decodeIfPresent(Bool.self, forKey: .hotKeyEnabled) ?? true
+        let decodedHotKeyBinding = try container.decodeIfPresent(HotKeyBinding.self, forKey: .hotKeyBinding) ?? .defaultToggle
+        let decodedFocusEnabled = try container.decodeIfPresent(Bool.self, forKey: .focusEnabled) ?? false
+        let decodedFocusIntensity = try container.decodeIfPresent(Double.self, forKey: .focusIntensity) ?? FocusBounds.defaultIntensity
+        let decodedFocusTint = try container.decodeIfPresent(FocusTintOption.self, forKey: .focusTint) ?? .followWallpaper
+        let decodedFocusScope = try container.decodeIfPresent(FocusScope.self, forKey: .focusScope) ?? .frontApplication
+        let decodedDimMenuBar = try container.decodeIfPresent(Bool.self, forKey: .dimMenuBar) ?? false
+        let decodedDimDock = try container.decodeIfPresent(Bool.self, forKey: .dimDock) ?? false
+        let decodedPolicy = try container.decodeIfPresent(FocusMultiDisplayPolicy.self, forKey: .focusMultiDisplayPolicy) ?? .dimInactiveScreens
+        let decodedSpeed = try container.decodeIfPresent(FocusTransitionSpeed.self, forKey: .focusTransitionSpeed) ?? .gentle
+        let decodedExcludedApps = try container.decodeIfPresent(Set<String>.self, forKey: .focusExcludedBundleIDs) ?? []
+        let decodedFocusHotKeyEnabled = try container.decodeIfPresent(Bool.self, forKey: .focusHotKeyEnabled) ?? true
+        let decodedFocusHotKeyBinding = try container.decodeIfPresent(HotKeyBinding.self, forKey: .focusHotKeyBinding) ?? .defaultFocusToggle
+
+        self.init(
+            enabled: decodedEnabled,
+            intensity: decodedIntensity,
+            darkOnly: decodedDarkOnly,
+            tint: decodedTint,
+            excludedDisplayIDs: decodedExcludedDisplays,
+            hotKeyEnabled: decodedHotKeyEnabled,
+            hotKeyBinding: decodedHotKeyBinding,
+            focusEnabled: decodedFocusEnabled,
+            focusIntensity: decodedFocusIntensity,
+            focusTint: decodedFocusTint,
+            focusScope: decodedFocusScope,
+            dimMenuBar: decodedDimMenuBar,
+            dimDock: decodedDimDock,
+            focusMultiDisplayPolicy: decodedPolicy,
+            focusTransitionSpeed: decodedSpeed,
+            focusExcludedBundleIDs: decodedExcludedApps,
+            focusHotKeyEnabled: decodedFocusHotKeyEnabled,
+            focusHotKeyBinding: decodedFocusHotKeyBinding
+        )
     }
 }
 
@@ -72,6 +160,18 @@ public final class PreferencesStore {
             PreferenceKey.hotKeyEnabled: true,
             PreferenceKey.hotKeyKeyCode: Int(HotKeyBinding.defaultToggle.keyCode),
             PreferenceKey.hotKeyModifiers: Int(HotKeyBinding.defaultToggle.modifiers),
+            PreferenceKey.focusEnabled: false,
+            PreferenceKey.focusIntensity: FocusBounds.defaultIntensity,
+            PreferenceKey.focusTint: FocusTintOption.followWallpaper.rawValue,
+            PreferenceKey.focusScope: FocusScope.frontApplication.rawValue,
+            PreferenceKey.focusDimMenuBar: false,
+            PreferenceKey.focusDimDock: false,
+            PreferenceKey.focusMultiDisplayPolicy: FocusMultiDisplayPolicy.dimInactiveScreens.rawValue,
+            PreferenceKey.focusTransitionSpeed: FocusTransitionSpeed.gentle.rawValue,
+            PreferenceKey.focusExcludedBundleIDs: [String](),
+            PreferenceKey.focusHotKeyEnabled: true,
+            PreferenceKey.focusHotKeyKeyCode: Int(HotKeyBinding.defaultFocusToggle.keyCode),
+            PreferenceKey.focusHotKeyModifiers: Int(HotKeyBinding.defaultFocusToggle.modifiers),
         ])
     }
 
@@ -94,14 +194,38 @@ public final class PreferencesStore {
         }
 
         let hotKeyEnabled = defaults.bool(forKey: PreferenceKey.hotKeyEnabled)
-        let keyCode = defaults.integer(forKey: PreferenceKey.hotKeyKeyCode)
-        let modifiers = defaults.integer(forKey: PreferenceKey.hotKeyModifiers)
-        let candidateBinding: HotKeyBinding
-        if keyCode >= 0, keyCode <= Int(UInt32.max), modifiers >= 0, modifiers <= Int(UInt32.max) {
-            candidateBinding = HotKeyBinding(keyCode: UInt32(keyCode), modifiers: UInt32(modifiers))
-        } else {
-            candidateBinding = .defaultToggle
-        }
+        let candidateBinding = loadHotKeyBinding(
+            keyCodeKey: PreferenceKey.hotKeyKeyCode,
+            modifiersKey: PreferenceKey.hotKeyModifiers,
+            fallback: .defaultToggle
+        )
+
+        let focusEnabled = defaults.bool(forKey: PreferenceKey.focusEnabled)
+        let rawFocusIntensity = defaults.double(forKey: PreferenceKey.focusIntensity)
+        let rawFocusTint = defaults.string(forKey: PreferenceKey.focusTint) ?? FocusTintOption.followWallpaper.rawValue
+        let focusTint = FocusTintOption(rawValue: rawFocusTint) ?? .followWallpaper
+        let rawFocusScope = defaults.string(forKey: PreferenceKey.focusScope) ?? FocusScope.frontApplication.rawValue
+        let focusScope = FocusScope(rawValue: rawFocusScope) ?? .frontApplication
+        let dimMenuBar = defaults.bool(forKey: PreferenceKey.focusDimMenuBar)
+        let dimDock = defaults.bool(forKey: PreferenceKey.focusDimDock)
+        let rawPolicy = defaults.string(forKey: PreferenceKey.focusMultiDisplayPolicy) ?? FocusMultiDisplayPolicy.dimInactiveScreens.rawValue
+        let focusMultiDisplayPolicy = FocusMultiDisplayPolicy(rawValue: rawPolicy) ?? .dimInactiveScreens
+        let rawSpeed = defaults.string(forKey: PreferenceKey.focusTransitionSpeed) ?? FocusTransitionSpeed.gentle.rawValue
+        let focusTransitionSpeed = FocusTransitionSpeed(rawValue: rawSpeed) ?? .gentle
+
+        let rawExcludedBundles = defaults.stringArray(forKey: PreferenceKey.focusExcludedBundleIDs) ?? []
+        let focusExcludedBundleIDs = Set(
+            rawExcludedBundles
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+
+        let focusHotKeyEnabled = defaults.bool(forKey: PreferenceKey.focusHotKeyEnabled)
+        let focusCandidateBinding = loadHotKeyBinding(
+            keyCodeKey: PreferenceKey.focusHotKeyKeyCode,
+            modifiersKey: PreferenceKey.focusHotKeyModifiers,
+            fallback: .defaultFocusToggle
+        )
 
         return DimmingSnapshot(
             enabled: enabled,
@@ -110,13 +234,31 @@ public final class PreferencesStore {
             tint: tint,
             excludedDisplayIDs: excludedIDs,
             hotKeyEnabled: hotKeyEnabled,
-            hotKeyBinding: candidateBinding.isValid ? candidateBinding : .defaultToggle
+            hotKeyBinding: candidateBinding,
+            focusEnabled: focusEnabled,
+            focusIntensity: FocusBounds.clampedIntensity(rawFocusIntensity),
+            focusTint: focusTint,
+            focusScope: focusScope,
+            dimMenuBar: dimMenuBar,
+            dimDock: dimDock,
+            focusMultiDisplayPolicy: focusMultiDisplayPolicy,
+            focusTransitionSpeed: focusTransitionSpeed,
+            focusExcludedBundleIDs: focusExcludedBundleIDs,
+            focusHotKeyEnabled: focusHotKeyEnabled,
+            focusHotKeyBinding: focusCandidateBinding
         )
     }
 
     public func save(_ snapshot: DimmingSnapshot) {
         let clampedIntensity = DimmingBounds.clampedIntensity(snapshot.intensity)
         let validBinding = snapshot.hotKeyBinding.isValid ? snapshot.hotKeyBinding : .defaultToggle
+        let clampedFocusIntensity = FocusBounds.clampedIntensity(snapshot.focusIntensity)
+        let validFocusBinding = snapshot.focusHotKeyBinding.isValid ? snapshot.focusHotKeyBinding : .defaultFocusToggle
+        let cleanedBundles = snapshot.focusExcludedBundleIDs
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .sorted()
+
         defaults.set(snapshot.enabled, forKey: PreferenceKey.enabled)
         defaults.set(clampedIntensity, forKey: PreferenceKey.intensity)
         defaults.set(snapshot.darkOnly, forKey: PreferenceKey.darkOnly)
@@ -125,6 +267,34 @@ public final class PreferencesStore {
         defaults.set(snapshot.hotKeyEnabled, forKey: PreferenceKey.hotKeyEnabled)
         defaults.set(Int(validBinding.keyCode), forKey: PreferenceKey.hotKeyKeyCode)
         defaults.set(Int(validBinding.modifiers), forKey: PreferenceKey.hotKeyModifiers)
+        defaults.set(snapshot.focusEnabled, forKey: PreferenceKey.focusEnabled)
+        defaults.set(clampedFocusIntensity, forKey: PreferenceKey.focusIntensity)
+        defaults.set(snapshot.focusTint.rawValue, forKey: PreferenceKey.focusTint)
+        defaults.set(snapshot.focusScope.rawValue, forKey: PreferenceKey.focusScope)
+        defaults.set(snapshot.dimMenuBar, forKey: PreferenceKey.focusDimMenuBar)
+        defaults.set(snapshot.dimDock, forKey: PreferenceKey.focusDimDock)
+        defaults.set(snapshot.focusMultiDisplayPolicy.rawValue, forKey: PreferenceKey.focusMultiDisplayPolicy)
+        defaults.set(snapshot.focusTransitionSpeed.rawValue, forKey: PreferenceKey.focusTransitionSpeed)
+        defaults.set(cleanedBundles, forKey: PreferenceKey.focusExcludedBundleIDs)
+        defaults.set(snapshot.focusHotKeyEnabled, forKey: PreferenceKey.focusHotKeyEnabled)
+        defaults.set(Int(validFocusBinding.keyCode), forKey: PreferenceKey.focusHotKeyKeyCode)
+        defaults.set(Int(validFocusBinding.modifiers), forKey: PreferenceKey.focusHotKeyModifiers)
+    }
+
+    private func loadHotKeyBinding(
+        keyCodeKey: String,
+        modifiersKey: String,
+        fallback: HotKeyBinding
+    ) -> HotKeyBinding {
+        let keyCode = defaults.integer(forKey: keyCodeKey)
+        let modifiers = defaults.integer(forKey: modifiersKey)
+        if keyCode >= 0, keyCode <= Int(UInt32.max), modifiers >= 0, modifiers <= Int(UInt32.max) {
+            let candidate = HotKeyBinding(keyCode: UInt32(keyCode), modifiers: UInt32(modifiers))
+            if candidate.isValid {
+                return candidate
+            }
+        }
+        return fallback
     }
 
     public var didSetupLoginItem: Bool {

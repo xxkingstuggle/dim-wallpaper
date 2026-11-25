@@ -112,7 +112,8 @@ public struct HotKeyBinding: Equatable, Codable, Sendable {
     public static let controlMask: UInt32 = 0x1000
     public static let supportedModifiersMask: UInt32 = commandMask | shiftMask | optionMask | controlMask
 
-    public static let defaultToggle = HotKeyBinding(keyCode: 2, modifiers: optionMask | commandMask)
+    public static let defaultToggle = HotKeyBinding(keyCode: 2, modifiers: controlMask | optionMask | commandMask)
+    public static let defaultFocusToggle = HotKeyBinding(keyCode: 3, modifiers: controlMask | optionMask | commandMask)
 
     public var keyCode: UInt32
     public var modifiers: UInt32
