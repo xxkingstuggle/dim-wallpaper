@@ -1859,8 +1859,8 @@ private final class FocusBackdropView: NSView {
             maskLayer.add(anim, forKey: "dimWallpaper.waveTide")
 
         case .inkBloom:
-            let startScale: CGFloat = entering ? 0.10 : 3.60
-            let endScale: CGFloat = entering ? 3.60 : 0.10
+            let startScale: CGFloat = entering ? 0.10 : 4.80
+            let endScale: CGFloat = entering ? 4.80 : 0.10
             let anim = CABasicAnimation(keyPath: "transform.scale")
             anim.fromValue = startScale
             anim.toValue = endScale
@@ -1926,7 +1926,7 @@ private final class FocusBackdropView: NSView {
                 x: width * anchorNormalizedPoint.x,
                 y: height * anchorNormalizedPoint.y
             )
-            let initialScale: CGFloat = entering ? 0.10 : 3.60
+            let initialScale: CGFloat = entering ? 0.10 : 4.80
             inkLayer.transform = CATransform3DMakeScale(initialScale, initialScale, 1.0)
             return inkLayer
 

@@ -29,13 +29,94 @@ private enum ControlCenterTab: String, CaseIterable, Identifiable {
     }
 }
 
-private struct ScrollContentHeightPreferenceKey: SwiftUI.PreferenceKey {
-    static let defaultValue: CGFloat = 0
+@MainActor
+private final class FlippedDocumentContainerView: NSView {
+    override var isFlipped: Bool { true }
+}
 
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        let candidate = nextValue()
-        if candidate.isFinite && candidate > 0 {
-            value = candidate
+@MainActor
+private struct BorderlessVerticalScrollView<Content: View>: NSViewRepresentable {
+    let contentWidth: CGFloat
+    let resetToken: AnyHashable
+    let onContentHeightChange: (CGFloat) -> Void
+    @ViewBuilder let content: () -> Content
+
+    @MainActor
+    final class Coordinator {
+        let documentContainer = FlippedDocumentContainerView(frame: .zero)
+        var hostingView: NSHostingView<Content>?
+        var lastResetToken: AnyHashable?
+        var lastReportedHeight: CGFloat = 0
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView(frame: CGRect(x: 0, y: 0, width: contentWidth, height: 320))
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+        scrollView.hasVerticalScroller = false
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.scrollerStyle = .overlay
+        scrollView.verticalScrollElasticity = .automatic
+        scrollView.horizontalScrollElasticity = .none
+        scrollView.contentView.drawsBackground = false
+
+        let hosting = NSHostingView(rootView: content())
+        hosting.translatesAutoresizingMaskIntoConstraints = true
+        context.coordinator.hostingView = hosting
+        context.coordinator.documentContainer.addSubview(hosting)
+        scrollView.documentView = context.coordinator.documentContainer
+
+        syncLayout(in: scrollView, coordinator: context.coordinator, resetToTop: true)
+        context.coordinator.lastResetToken = resetToken
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        scrollView.hasVerticalScroller = false
+        scrollView.hasHorizontalScroller = false
+        scrollView.scrollerStyle = .overlay
+
+        let shouldReset = context.coordinator.lastResetToken != resetToken
+        context.coordinator.lastResetToken = resetToken
+        context.coordinator.hostingView?.rootView = content()
+        syncLayout(in: scrollView, coordinator: context.coordinator, resetToTop: shouldReset)
+    }
+
+    private func syncLayout(in scrollView: NSScrollView, coordinator: Coordinator, resetToTop: Bool) {
+        guard let hosting = coordinator.hostingView else { return }
+        let targetWidth = max(1, contentWidth)
+        hosting.frame = CGRect(x: 0, y: 0, width: targetWidth, height: max(1, hosting.frame.height))
+        hosting.layoutSubtreeIfNeeded()
+        let measuredHeight = max(1, ceil(hosting.fittingSize.height))
+        hosting.frame = CGRect(x: 0, y: 0, width: targetWidth, height: measuredHeight)
+
+        let visibleHeight = scrollView.contentSize.height
+        let documentHeight = max(visibleHeight, measuredHeight)
+        coordinator.documentContainer.frame = CGRect(x: 0, y: 0, width: targetWidth, height: documentHeight)
+
+        if resetToTop {
+            scrollView.contentView.scroll(to: .zero)
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+        } else {
+            let maxOffsetY = max(0, documentHeight - visibleHeight)
+            let currentY = scrollView.contentView.bounds.origin.y
+            if currentY > maxOffsetY {
+                scrollView.contentView.scroll(to: NSPoint(x: 0, y: maxOffsetY))
+                scrollView.reflectScrolledClipView(scrollView.contentView)
+            }
+        }
+
+        if measuredHeight.isFinite, abs(coordinator.lastReportedHeight - measuredHeight) > 0.5 {
+            coordinator.lastReportedHeight = measuredHeight
+            let report = onContentHeightChange
+            Task { @MainActor in
+                report(measuredHeight)
+            }
         }
     }
 }
@@ -74,7 +155,16 @@ struct ControlCenterView: View {
             Divider()
                 .opacity(reduceTransparency ? 0.9 : 0.45)
 
-            ScrollView(.vertical, showsIndicators: true) {
+            BorderlessVerticalScrollView(
+                contentWidth: 372,
+                resetToken: selectedTab,
+                onContentHeightChange: { nextHeight in
+                    guard nextHeight.isFinite, nextHeight > 1 else { return }
+                    if abs(measuredContentHeight - nextHeight) > 0.5 {
+                        measuredContentHeight = nextHeight
+                    }
+                }
+            ) {
                 VStack(spacing: 9) {
                     DesktopPreviewCard(
                         isDarkSystem: controller.state.isDarkAppearance,
@@ -109,22 +199,9 @@ struct ControlCenterView: View {
                 .id(selectedTab)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
-                .background(
-                    GeometryReader { geometry in
-                        Color.clear.preference(
-                            key: ScrollContentHeightPreferenceKey.self,
-                            value: geometry.size.height
-                        )
-                    }
-                )
+                .frame(width: 372, alignment: .top)
             }
             .frame(height: resolvedScrollHeight)
-            .onPreferenceChange(ScrollContentHeightPreferenceKey.self) { nextHeight in
-                guard nextHeight.isFinite, nextHeight > 1 else { return }
-                if abs(measuredContentHeight - nextHeight) > 0.5 {
-                    measuredContentHeight = nextHeight
-                }
-            }
 
             Divider()
                 .opacity(reduceTransparency ? 0.9 : 0.45)
@@ -134,7 +211,7 @@ struct ControlCenterView: View {
                 .padding(.vertical, 9)
         }
         .frame(width: 372)
-        .background(panelBackground)
+        .background(panelBackground.ignoresSafeArea())
         .onAppear {
             if let currentHeight = (NSApp.keyWindow?.screen ?? NSScreen.main)?.visibleFrame.height,
                currentHeight.isFinite,
@@ -151,8 +228,10 @@ struct ControlCenterView: View {
     private var panelBackground: some View {
         if reduceTransparency {
             Color(nsColor: .windowBackgroundColor)
+        } else if colorScheme == .dark {
+            Color.black.opacity(0.18)
         } else {
-            Color.clear
+            Color.white.opacity(0.74)
         }
     }
 
@@ -162,7 +241,7 @@ struct ControlCenterView: View {
         }
         return colorScheme == .dark
             ? Color.white.opacity(0.065)
-            : Color.black.opacity(0.038)
+            : Color.white.opacity(0.55)
     }
 
     private var cardBorderColor: Color {
@@ -171,7 +250,7 @@ struct ControlCenterView: View {
         }
         return colorScheme == .dark
             ? Color.white.opacity(0.11)
-            : Color.black.opacity(0.08)
+            : Color.black.opacity(0.07)
     }
 
     private var focusAccentColor: Color {
