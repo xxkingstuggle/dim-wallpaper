@@ -144,14 +144,23 @@ public enum FocusTransitionSpeed: String, CaseIterable, Identifiable, Codable, S
 
     public var baseDuration: Double {
         switch self {
-        case .gentle: 0.18
-        case .snappy: 0.08
+        case .gentle: 0.11
+        case .snappy: 0.06
         case .instant: 0.0
         }
     }
 
     public func resolvedDuration(reduceMotion: Bool) -> Double {
         reduceMotion ? 0.0 : baseDuration
+    }
+
+    public func resolvedManualDuration(reduceMotion: Bool) -> Double {
+        guard !reduceMotion else { return 0.0 }
+        switch self {
+        case .instant: return 0.0
+        case .snappy: return 0.06
+        case .gentle: return 0.07
+        }
     }
 }
 
@@ -284,37 +293,41 @@ public struct FocusScreenPartition: Equatable, Sendable {
         visibleFrame: CGRect,
         dimMenuBar: Bool,
         dimDock: Bool,
-        foregroundWindowFrames: [CGRect]
+        foregroundWindowFrames: [CGRect],
+        safeAreaTopInset: CGFloat = 0,
+        systemMenuBarBottomY: CGFloat? = nil
     ) -> FocusScreenPartition {
         guard screenFrame.width > FocusBounds.minimumStripThickness,
               screenFrame.height > FocusBounds.minimumStripThickness else {
             return FocusScreenPartition(mainRect: .zero, menuBarStripRect: nil, dockStripRects: [])
         }
 
-        if !dimMenuBar && !dimDock {
-            return FocusScreenPartition(mainRect: screenFrame, menuBarStripRect: nil, dockStripRects: [])
-        }
-
         let clampedVisible = visibleFrame.intersection(screenFrame)
         let effectiveVisible = clampedVisible.isNull || clampedVisible.isEmpty ? screenFrame : clampedVisible
+        let menuBarBottomY = resolvedMenuBarBottomY(
+            screenFrame: screenFrame,
+            effectiveVisible: effectiveVisible,
+            safeAreaTopInset: safeAreaTopInset,
+            systemMenuBarBottomY: systemMenuBarBottomY
+        )
+        let menuBarHeight = max(0, screenFrame.maxY - menuBarBottomY)
 
         var remaining = screenFrame
         var menuBarStrip: CGRect?
 
-        if dimMenuBar {
-            let menuBarHeight = screenFrame.maxY - effectiveVisible.maxY
-            if menuBarHeight > FocusBounds.minimumStripThickness {
+        if menuBarHeight > FocusBounds.minimumStripThickness {
+            remaining = CGRect(
+                x: screenFrame.minX,
+                y: screenFrame.minY,
+                width: screenFrame.width,
+                height: max(0, menuBarBottomY - screenFrame.minY)
+            )
+            if dimMenuBar {
                 menuBarStrip = CGRect(
                     x: screenFrame.minX,
-                    y: effectiveVisible.maxY,
+                    y: menuBarBottomY,
                     width: screenFrame.width,
                     height: menuBarHeight
-                )
-                remaining = CGRect(
-                    x: screenFrame.minX,
-                    y: screenFrame.minY,
-                    width: screenFrame.width,
-                    height: max(0, effectiveVisible.maxY - screenFrame.minY)
                 )
             }
         }
@@ -393,6 +406,39 @@ public struct FocusScreenPartition: Equatable, Sendable {
         )
     }
 
+    public static func resolvedMenuBarBottomY(
+        screenFrame: CGRect,
+        visibleFrame: CGRect,
+        safeAreaTopInset: CGFloat = 0,
+        systemMenuBarBottomY: CGFloat? = nil
+    ) -> CGFloat {
+        let clampedVisible = visibleFrame.intersection(screenFrame)
+        let effectiveVisible = clampedVisible.isNull || clampedVisible.isEmpty ? screenFrame : clampedVisible
+        return resolvedMenuBarBottomY(
+            screenFrame: screenFrame,
+            effectiveVisible: effectiveVisible,
+            safeAreaTopInset: safeAreaTopInset,
+            systemMenuBarBottomY: systemMenuBarBottomY
+        )
+    }
+
+    private static func resolvedMenuBarBottomY(
+        screenFrame: CGRect,
+        effectiveVisible: CGRect,
+        safeAreaTopInset: CGFloat,
+        systemMenuBarBottomY: CGFloat?
+    ) -> CGFloat {
+        var bottomY = effectiveVisible.maxY
+        if safeAreaTopInset.isFinite && safeAreaTopInset > FocusBounds.minimumStripThickness {
+            bottomY = min(bottomY, screenFrame.maxY - safeAreaTopInset)
+        }
+        if let systemMenuBarBottomY, systemMenuBarBottomY.isFinite {
+            let clampedSystemBottom = min(max(systemMenuBarBottomY, screenFrame.minY), screenFrame.maxY)
+            bottomY = min(bottomY, clampedSystemBottom)
+        }
+        return min(max(bottomY, screenFrame.minY), screenFrame.maxY)
+    }
+
     public static func subtract(cutout: CGRect, from source: CGRect) -> [CGRect] {
         let overlap = source.intersection(cutout)
         if overlap.isNull || overlap.isEmpty
@@ -434,6 +480,11 @@ public enum FocusTargetResolution: Equatable, Sendable {
 }
 
 public struct FocusTargetResolver: Equatable, Sendable {
+    public static let desktopShellBundleIDs: Set<String> = [
+        "com.apple.WindowManager",
+        "com.apple.dock",
+    ]
+
     public static let ignoredTransientBundleIDs: Set<String> = [
         "com.apple.screencaptureui",
         "com.apple.Spotlight",
@@ -442,47 +493,107 @@ public struct FocusTargetResolver: Equatable, Sendable {
         "com.apple.UserNotificationCenter",
         "com.apple.SecurityAgent",
         "com.apple.CoreServicesUIAgent",
-        "com.apple.WindowManager",
         "com.apple.OSDUIHelper",
-        "com.apple.dock",
         "com.apple.loginwindow",
+    ]
+
+    public static let systemShellBundleIDs: Set<String> = ignoredTransientBundleIDs
+        .union(desktopShellBundleIDs)
+        .union(["com.apple.systemuiserver"])
+
+    public static let systemShellOwnerNames: Set<String> = [
+        "WindowManager",
+        "Dock",
+        "Control Center",
+        "Notification Center",
+        "Spotlight",
+        "Window Server",
+        "SystemUIServer",
     ]
 
     public let selfPID: Int32
     public private(set) var lastExternalFrontmostApp: FocusAppIdentity?
+    public private(set) var isInDesktopState: Bool
 
-    public init(selfPID: Int32, lastExternalFrontmostApp: FocusAppIdentity? = nil) {
+    public init(
+        selfPID: Int32,
+        lastExternalFrontmostApp: FocusAppIdentity? = nil,
+        isInDesktopState: Bool = false
+    ) {
         self.selfPID = selfPID
         self.lastExternalFrontmostApp = lastExternalFrontmostApp
+        self.isInDesktopState = isInDesktopState
+    }
+
+    public mutating func recordFrontmostAppFast(_ currentFrontmost: FocusAppIdentity?) {
+        guard let currentFrontmost else { return }
+        if currentFrontmost.pid == selfPID {
+            return
+        }
+        if let bundleID = currentFrontmost.bundleIdentifier {
+            if Self.desktopShellBundleIDs.contains(bundleID) {
+                isInDesktopState = true
+                lastExternalFrontmostApp = nil
+                return
+            }
+            if Self.ignoredTransientBundleIDs.contains(bundleID) {
+                return
+            }
+        }
+        if currentFrontmost.isRegularActivationPolicy {
+            isInDesktopState = false
+            lastExternalFrontmostApp = currentFrontmost
+        }
     }
 
     public mutating func resolve(
         currentFrontmost: FocusAppIdentity?,
         excludedBundleIDs: Set<String>,
         observedWindows: [ObservedWindowInfo] = [],
+        screens: [ScreenGeometry] = [],
         fallbackAppProvider: ((Int32) -> FocusAppIdentity?)? = nil
     ) -> FocusTargetResolution {
+        let candidateWindows = FocusWindowOrderPlanner.filteredActiveStageWindows(
+            windows: observedWindows,
+            screens: screens,
+            excludingSelfPID: selfPID
+        )
+
         var candidate: FocusAppIdentity?
         if let currentFrontmost {
+            let bundleID = currentFrontmost.bundleIdentifier
+            if let bundleID, Self.desktopShellBundleIDs.contains(bundleID) {
+                isInDesktopState = true
+                lastExternalFrontmostApp = nil
+                return .unavailable
+            }
+
             let isSelf = currentFrontmost.pid == selfPID
-            let isTransient = currentFrontmost.bundleIdentifier.map { Self.ignoredTransientBundleIDs.contains($0) } ?? false
+            let isTransient = bundleID.map { Self.ignoredTransientBundleIDs.contains($0) } ?? false
             let isNonRegularWithoutStandardWindow = !currentFrontmost.isRegularActivationPolicy
-                && !observedWindows.contains {
-                    $0.ownerPID == currentFrontmost.pid && $0.isEligibleStandardWindow(excludingSelfPID: selfPID)
+                && !candidateWindows.contains {
+                    $0.ownerPID == currentFrontmost.pid
                 }
             if isSelf || isTransient || isNonRegularWithoutStandardWindow {
+                if isInDesktopState {
+                    return .unavailable
+                }
                 candidate = lastExternalFrontmostApp
             } else {
+                isInDesktopState = false
                 lastExternalFrontmostApp = currentFrontmost
                 candidate = currentFrontmost
             }
         } else {
+            if isInDesktopState {
+                return .unavailable
+            }
             candidate = lastExternalFrontmostApp
         }
 
-        if candidate == nil, !observedWindows.isEmpty {
+        if candidate == nil, !isInDesktopState, !candidateWindows.isEmpty {
             if let fallback = resolveColdStartFallback(
-                observedWindows: observedWindows,
+                candidateWindows: candidateWindows,
                 fallbackAppProvider: fallbackAppProvider
             ) {
                 lastExternalFrontmostApp = fallback
@@ -500,18 +611,17 @@ public struct FocusTargetResolver: Equatable, Sendable {
     }
 
     private func resolveColdStartFallback(
-        observedWindows: [ObservedWindowInfo],
+        candidateWindows: [ObservedWindowInfo],
         fallbackAppProvider: ((Int32) -> FocusAppIdentity?)?
     ) -> FocusAppIdentity? {
         var seenPIDs = Set<Int32>()
-        for window in observedWindows {
-            guard window.isEligibleStandardWindow(excludingSelfPID: selfPID) else { continue }
+        for window in candidateWindows {
             guard seenPIDs.insert(window.ownerPID).inserted else { continue }
 
             if let fallbackAppProvider {
                 guard let resolved = fallbackAppProvider(window.ownerPID) else { continue }
-                let isTransient = resolved.bundleIdentifier.map { Self.ignoredTransientBundleIDs.contains($0) } ?? false
-                if isTransient || resolved.pid == selfPID {
+                let isSystemShell = resolved.bundleIdentifier.map { Self.systemShellBundleIDs.contains($0) } ?? false
+                if isSystemShell || resolved.pid == selfPID {
                     continue
                 }
                 return resolved
@@ -535,6 +645,8 @@ public struct ObservedWindowInfo: Equatable, Sendable {
     public let alpha: Double
     public let cgBounds: CGRect
     public let isOnScreen: Bool
+    public let ownerName: String?
+    public let ownerBundleIdentifier: String?
 
     public init(
         windowNumber: Int,
@@ -542,7 +654,9 @@ public struct ObservedWindowInfo: Equatable, Sendable {
         layer: Int = 0,
         alpha: Double = 1.0,
         cgBounds: CGRect,
-        isOnScreen: Bool = true
+        isOnScreen: Bool = true,
+        ownerName: String? = nil,
+        ownerBundleIdentifier: String? = nil
     ) {
         self.windowNumber = windowNumber
         self.ownerPID = ownerPID
@@ -550,6 +664,24 @@ public struct ObservedWindowInfo: Equatable, Sendable {
         self.alpha = alpha
         self.cgBounds = cgBounds
         self.isOnScreen = isOnScreen
+        self.ownerName = ownerName
+        self.ownerBundleIdentifier = ownerBundleIdentifier
+    }
+
+    public var isWindowManagerLayerZeroWindow: Bool {
+        isOnScreen
+            && layer == FocusWindowLevels.normalFocusLevel
+            && (ownerBundleIdentifier == "com.apple.WindowManager" || ownerName == "WindowManager")
+    }
+
+    public var isSystemShellWindow: Bool {
+        if let ownerBundleIdentifier, FocusTargetResolver.systemShellBundleIDs.contains(ownerBundleIdentifier) {
+            return true
+        }
+        if let ownerName, FocusTargetResolver.systemShellOwnerNames.contains(ownerName) {
+            return true
+        }
+        return false
     }
 
     public func isEligibleStandardWindow(excludingSelfPID selfPID: Int32) -> Bool {
@@ -559,6 +691,7 @@ public struct ObservedWindowInfo: Equatable, Sendable {
             && cgBounds.width >= FocusBounds.minimumWindowDimension
             && cgBounds.height >= FocusBounds.minimumWindowDimension
             && ownerPID != selfPID
+            && !isSystemShellWindow
     }
 }
 
@@ -567,12 +700,23 @@ public struct ScreenGeometry: Equatable, Sendable {
     public let frame: CGRect
     public let visibleFrame: CGRect
     public let isPrimary: Bool
+    public let safeAreaTopInset: CGFloat
+    public let systemMenuBarBottomY: CGFloat?
 
-    public init(displayID: UInt32, frame: CGRect, visibleFrame: CGRect, isPrimary: Bool) {
+    public init(
+        displayID: UInt32,
+        frame: CGRect,
+        visibleFrame: CGRect,
+        isPrimary: Bool,
+        safeAreaTopInset: CGFloat = 0,
+        systemMenuBarBottomY: CGFloat? = nil
+    ) {
         self.displayID = displayID
         self.frame = frame
         self.visibleFrame = visibleFrame
         self.isPrimary = isPrimary
+        self.safeAreaTopInset = safeAreaTopInset
+        self.systemMenuBarBottomY = systemMenuBarBottomY
     }
 }
 
@@ -609,6 +753,77 @@ public struct FocusDisplayPlan: Equatable, Sendable {
 }
 
 public enum FocusWindowOrderPlanner {
+    public static let minimumStageIntersectionDimension: CGFloat = 80.0
+    public static let minimumStageCoverageRatio: CGFloat = 0.45
+    public static let stageManagerThumbnailOverlapRatio: CGFloat = 0.65
+    public static let stageManagerEdgeTolerance: CGFloat = 6.0
+
+    public static func isStageManagerThumbnail(
+        _ window: ObservedWindowInfo,
+        windowManagerRects: [CGRect]
+    ) -> Bool {
+        let windowArea = window.cgBounds.width * window.cgBounds.height
+        guard windowArea > 0, !windowManagerRects.isEmpty else { return false }
+        for wmRect in windowManagerRects {
+            let edgesMatch = abs(window.cgBounds.minX - wmRect.minX) <= stageManagerEdgeTolerance
+                && abs(window.cgBounds.maxX - wmRect.maxX) <= stageManagerEdgeTolerance
+                && abs(window.cgBounds.minY - wmRect.minY) <= stageManagerEdgeTolerance
+                && abs(window.cgBounds.maxY - wmRect.maxY) <= stageManagerEdgeTolerance
+            if edgesMatch {
+                return true
+            }
+            let overlap = window.cgBounds.intersection(wmRect)
+            if !overlap.isNull && !overlap.isEmpty {
+                let overlapArea = overlap.width * overlap.height
+                if (overlapArea / windowArea) >= stageManagerThumbnailOverlapRatio {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    public static func isActiveStageWindowOnScreen(
+        windowRect: CGRect,
+        screenFrame: CGRect
+    ) -> Bool {
+        let overlap = windowRect.intersection(screenFrame)
+        guard !overlap.isNull && !overlap.isEmpty else { return false }
+        guard overlap.width >= minimumStageIntersectionDimension,
+              overlap.height >= minimumStageIntersectionDimension else {
+            return false
+        }
+        let windowArea = windowRect.width * windowRect.height
+        let screenArea = screenFrame.width * screenFrame.height
+        let referenceArea = min(windowArea, screenArea)
+        guard referenceArea > 0 else { return false }
+        return ((overlap.width * overlap.height) / referenceArea) >= minimumStageCoverageRatio
+    }
+
+    public static func filteredActiveStageWindows(
+        windows: [ObservedWindowInfo],
+        screens: [ScreenGeometry],
+        excludingSelfPID selfPID: Int32
+    ) -> [ObservedWindowInfo] {
+        let windowManagerRects = windows
+            .filter(\.isWindowManagerLayerZeroWindow)
+            .map(\.cgBounds)
+        let baseCandidates = windows.filter { window in
+            window.isEligibleStandardWindow(excludingSelfPID: selfPID)
+                && !isStageManagerThumbnail(window, windowManagerRects: windowManagerRects)
+        }
+        guard !screens.isEmpty else {
+            return baseCandidates
+        }
+        let primaryHeight = Double((screens.first(where: \.isPrimary) ?? screens[0]).frame.height)
+        return baseCandidates.filter { window in
+            let appKitRect = FocusCoordinateSpace.cgRectToAppKitRect(window.cgBounds, primaryScreenHeight: primaryHeight)
+            return screens.contains { screen in
+                isActiveStageWindowOnScreen(windowRect: appKitRect, screenFrame: screen.frame)
+            }
+        }
+    }
+
     public static func plan(
         screens: [ScreenGeometry],
         windows: [ObservedWindowInfo],
@@ -624,40 +839,55 @@ public enum FocusWindowOrderPlanner {
     ) -> [FocusDisplayPlan] {
         guard !screens.isEmpty else { return [] }
 
-        let clampedAlpha = isEnabled ? FocusBounds.clampedIntensity(intensity) : 0.0
-        guard isEnabled, clampedAlpha > FocusBounds.visibilityEpsilon, let targetPID else {
-            return screens.map { screen in
-                FocusDisplayPlan(
-                    displayID: screen.displayID,
-                    placement: .hidden,
-                    partition: FocusScreenPartition(mainRect: screen.frame, menuBarStripRect: nil, dockStripRects: []),
-                    targetAlpha: 0.0
-                )
-            }
+        let primaryHeight = Double((screens.first(where: \.isPrimary) ?? screens[0]).frame.height)
+        let systemMenuBarBottomByDisplay = resolvedSystemMenuBarBottomByDisplay(
+            screens: screens,
+            windows: windows,
+            primaryScreenHeight: primaryHeight
+        )
+
+        func makeHiddenPlan(for screen: ScreenGeometry) -> FocusDisplayPlan {
+            let partition = FocusScreenPartition.partition(
+                screenFrame: screen.frame,
+                visibleFrame: screen.visibleFrame,
+                dimMenuBar: false,
+                dimDock: false,
+                foregroundWindowFrames: [],
+                safeAreaTopInset: screen.safeAreaTopInset,
+                systemMenuBarBottomY: systemMenuBarBottomByDisplay[screen.displayID]
+            )
+            return FocusDisplayPlan(
+                displayID: screen.displayID,
+                placement: .hidden,
+                partition: partition,
+                targetAlpha: 0.0,
+                foregroundWindowFrames: []
+            )
         }
 
-        let primaryHeight = Double((screens.first(where: \.isPrimary) ?? screens[0]).frame.height)
-        let eligibleWindows: [(window: ObservedWindowInfo, appKitRect: CGRect)] = windows.compactMap { window in
-            guard window.isEligibleStandardWindow(excludingSelfPID: selfPID) else { return nil }
-            let rect = FocusCoordinateSpace.cgRectToAppKitRect(window.cgBounds, primaryScreenHeight: primaryHeight)
-            return (window, rect)
+        let clampedAlpha = isEnabled ? FocusBounds.clampedIntensity(intensity) : 0.0
+        guard isEnabled, clampedAlpha > FocusBounds.visibilityEpsilon, let targetPID else {
+            return screens.map(makeHiddenPlan)
+        }
+
+        let activeStageWindows = filteredActiveStageWindows(
+            windows: windows,
+            screens: screens,
+            excludingSelfPID: selfPID
+        )
+        let eligibleWindows: [(window: ObservedWindowInfo, appKitRect: CGRect)] = activeStageWindows.map { window in
+            (window, FocusCoordinateSpace.cgRectToAppKitRect(window.cgBounds, primaryScreenHeight: primaryHeight))
         }
 
         let globalFrontmostTargetWindowNumber: Int? = eligibleWindows.first(where: { $0.window.ownerPID == targetPID })?.window.windowNumber
 
-        return screens.map { screen in
+        let candidatePlans: [FocusDisplayPlan] = screens.map { screen in
             if excludedDisplayIDs.contains(screen.displayID) {
-                return FocusDisplayPlan(
-                    displayID: screen.displayID,
-                    placement: .hidden,
-                    partition: FocusScreenPartition(mainRect: screen.frame, menuBarStripRect: nil, dockStripRects: []),
-                    targetAlpha: 0.0,
-                    foregroundWindowFrames: []
-                )
+                return makeHiddenPlan(for: screen)
             }
 
             let screenWindows = eligibleWindows.filter { entry in
-                windowIntersectsScreen(windowRect: entry.appKitRect, screen: screen, allScreens: screens)
+                isActiveStageWindowOnScreen(windowRect: entry.appKitRect, screenFrame: screen.frame)
             }
 
             let placement: FocusWindowPlacement
@@ -698,7 +928,9 @@ public enum FocusWindowOrderPlanner {
                 visibleFrame: screen.visibleFrame,
                 dimMenuBar: dimMenuBar,
                 dimDock: dimDock,
-                foregroundWindowFrames: foregroundFrames
+                foregroundWindowFrames: foregroundFrames,
+                safeAreaTopInset: screen.safeAreaTopInset,
+                systemMenuBarBottomY: systemMenuBarBottomByDisplay[screen.displayID]
             )
 
             return FocusDisplayPlan(
@@ -709,6 +941,61 @@ public enum FocusWindowOrderPlanner {
                 foregroundWindowFrames: foregroundFrames
             )
         }
+
+        let hasAnyActiveForegroundWindow = candidatePlans.contains { plan in
+            if case .orderBelow = plan.placement {
+                return true
+            }
+            return false
+        }
+        guard hasAnyActiveForegroundWindow else {
+            return screens.map(makeHiddenPlan)
+        }
+        return candidatePlans
+    }
+
+    private static func resolvedSystemMenuBarBottomByDisplay(
+        screens: [ScreenGeometry],
+        windows: [ObservedWindowInfo],
+        primaryScreenHeight: Double
+    ) -> [UInt32: CGFloat] {
+        var result: [UInt32: CGFloat] = [:]
+        for screen in screens {
+            if let explicit = screen.systemMenuBarBottomY, explicit.isFinite {
+                result[screen.displayID] = explicit
+            }
+        }
+        let mainMenuLayer = Int(CGWindowLevelForKey(.mainMenuWindow))
+        let statusLayerMinusOne = Int(CGWindowLevelForKey(.statusWindow)) - 1
+
+        for window in windows {
+            guard window.isOnScreen,
+                  window.layer == mainMenuLayer || window.layer == statusLayerMinusOne else {
+                continue
+            }
+            if let ownerName = window.ownerName, ownerName != "Window Server" && ownerName != "SystemUIServer" {
+                continue
+            }
+            let appKitRect = FocusCoordinateSpace.cgRectToAppKitRect(window.cgBounds, primaryScreenHeight: primaryScreenHeight)
+            guard appKitRect.height > FocusBounds.minimumStripThickness, appKitRect.height <= 80.0 else {
+                continue
+            }
+            for screen in screens {
+                let horizontalOverlap = min(appKitRect.maxX, screen.frame.maxX) - max(appKitRect.minX, screen.frame.minX)
+                guard horizontalOverlap >= screen.frame.width * 0.5 else { continue }
+                guard appKitRect.maxY >= screen.frame.maxY - 2.0,
+                      appKitRect.minY < screen.frame.maxY - FocusBounds.minimumStripThickness else {
+                    continue
+                }
+                let clampedBottom = min(max(appKitRect.minY, screen.frame.minY), screen.frame.maxY)
+                if let existing = result[screen.displayID] {
+                    result[screen.displayID] = min(existing, clampedBottom)
+                } else {
+                    result[screen.displayID] = clampedBottom
+                }
+            }
+        }
+        return result
     }
 
     private static func inactivePlacement(for policy: FocusMultiDisplayPolicy) -> FocusWindowPlacement {
@@ -716,32 +1003,5 @@ public enum FocusWindowOrderPlanner {
         case .dimInactiveScreens: .orderFrontNormal
         case .activeScreenOnly: .hidden
         }
-    }
-
-    private static func windowIntersectsScreen(
-        windowRect: CGRect,
-        screen: ScreenGeometry,
-        allScreens: [ScreenGeometry]
-    ) -> Bool {
-        let overlap = windowRect.intersection(screen.frame)
-        if overlap.isNull || overlap.isEmpty {
-            return false
-        }
-        if overlap.width >= 24 && overlap.height >= 24 {
-            return true
-        }
-        var bestDisplayID: UInt32?
-        var bestArea: CGFloat = 0
-        for candidate in allScreens {
-            let intersection = windowRect.intersection(candidate.frame)
-            if !intersection.isNull && !intersection.isEmpty {
-                let area = intersection.width * intersection.height
-                if area > bestArea {
-                    bestArea = area
-                    bestDisplayID = candidate.displayID
-                }
-            }
-        }
-        return bestDisplayID == screen.displayID
     }
 }

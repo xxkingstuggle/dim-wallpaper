@@ -59,7 +59,7 @@ public struct DimmingSnapshot: Equatable, Codable, Sendable {
         dimMenuBar: Bool = false,
         dimDock: Bool = false,
         focusMultiDisplayPolicy: FocusMultiDisplayPolicy = .dimInactiveScreens,
-        focusTransitionSpeed: FocusTransitionSpeed = .gentle,
+        focusTransitionSpeed: FocusTransitionSpeed = .snappy,
         focusExcludedBundleIDs: Set<String> = [],
         focusHotKeyEnabled: Bool = true,
         focusHotKeyBinding: HotKeyBinding = .defaultFocusToggle
@@ -100,7 +100,7 @@ public struct DimmingSnapshot: Equatable, Codable, Sendable {
         let decodedDimMenuBar = try container.decodeIfPresent(Bool.self, forKey: .dimMenuBar) ?? false
         let decodedDimDock = try container.decodeIfPresent(Bool.self, forKey: .dimDock) ?? false
         let decodedPolicy = try container.decodeIfPresent(FocusMultiDisplayPolicy.self, forKey: .focusMultiDisplayPolicy) ?? .dimInactiveScreens
-        let decodedSpeed = try container.decodeIfPresent(FocusTransitionSpeed.self, forKey: .focusTransitionSpeed) ?? .gentle
+        let decodedSpeed = try container.decodeIfPresent(FocusTransitionSpeed.self, forKey: .focusTransitionSpeed) ?? .snappy
         let decodedExcludedApps = try container.decodeIfPresent(Set<String>.self, forKey: .focusExcludedBundleIDs) ?? []
         let decodedFocusHotKeyEnabled = try container.decodeIfPresent(Bool.self, forKey: .focusHotKeyEnabled) ?? true
         let decodedFocusHotKeyBinding = try container.decodeIfPresent(HotKeyBinding.self, forKey: .focusHotKeyBinding) ?? .defaultFocusToggle
@@ -167,7 +167,7 @@ public final class PreferencesStore {
             PreferenceKey.focusDimMenuBar: false,
             PreferenceKey.focusDimDock: false,
             PreferenceKey.focusMultiDisplayPolicy: FocusMultiDisplayPolicy.dimInactiveScreens.rawValue,
-            PreferenceKey.focusTransitionSpeed: FocusTransitionSpeed.gentle.rawValue,
+            PreferenceKey.focusTransitionSpeed: FocusTransitionSpeed.snappy.rawValue,
             PreferenceKey.focusExcludedBundleIDs: [String](),
             PreferenceKey.focusHotKeyEnabled: true,
             PreferenceKey.focusHotKeyKeyCode: Int(HotKeyBinding.defaultFocusToggle.keyCode),
@@ -210,8 +210,8 @@ public final class PreferencesStore {
         let dimDock = defaults.bool(forKey: PreferenceKey.focusDimDock)
         let rawPolicy = defaults.string(forKey: PreferenceKey.focusMultiDisplayPolicy) ?? FocusMultiDisplayPolicy.dimInactiveScreens.rawValue
         let focusMultiDisplayPolicy = FocusMultiDisplayPolicy(rawValue: rawPolicy) ?? .dimInactiveScreens
-        let rawSpeed = defaults.string(forKey: PreferenceKey.focusTransitionSpeed) ?? FocusTransitionSpeed.gentle.rawValue
-        let focusTransitionSpeed = FocusTransitionSpeed(rawValue: rawSpeed) ?? .gentle
+        let rawSpeed = defaults.string(forKey: PreferenceKey.focusTransitionSpeed) ?? FocusTransitionSpeed.snappy.rawValue
+        let focusTransitionSpeed = FocusTransitionSpeed(rawValue: rawSpeed) ?? .snappy
 
         let rawExcludedBundles = defaults.stringArray(forKey: PreferenceKey.focusExcludedBundleIDs) ?? []
         let focusExcludedBundleIDs = Set(
