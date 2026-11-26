@@ -1099,6 +1099,153 @@ final class DimWallpaperCoreTests: XCTestCase {
         XCTAssertEqual(autoHideNoExempt[0].placement, .orderBelow(windowNumber: 720))
     }
 
+    func testNormalMaximizedSecondaryWindowDoesNotTriggerFullscreenWhileNativeAndHighLayerFullscreenDo() {
+        let primary = ScreenGeometry(
+            displayID: 1,
+            frame: CGRect(x: 0, y: 0, width: 1920, height: 1080),
+            visibleFrame: CGRect(x: 0, y: 75, width: 1920, height: 975),
+            isPrimary: true
+        )
+        let secondary = ScreenGeometry(
+            displayID: 2,
+            frame: CGRect(x: 1920, y: 0, width: 1470, height: 956),
+            visibleFrame: CGRect(x: 1920, y: 0, width: 1470, height: 924),
+            isPrimary: false,
+            safeAreaTopInset: 32
+        )
+        let screens = [primary, secondary]
+        let mainMenuLayer = Int(CGWindowLevelForKey(.mainMenuWindow))
+
+        let primaryMenuBar = ObservedWindowInfo(
+            windowNumber: 10,
+            ownerPID: 1,
+            layer: mainMenuLayer,
+            cgBounds: CGRect(x: 0, y: 0, width: 1920, height: 30),
+            ownerName: "Window Server"
+        )
+        let secondaryMenuBar = ObservedWindowInfo(
+            windowNumber: 11,
+            ownerPID: 1,
+            layer: mainMenuLayer,
+            cgBounds: CGRect(x: 1920, y: 124, width: 1470, height: 32),
+            ownerName: "Window Server"
+        )
+        let primaryWork = ObservedWindowInfo(
+            windowNumber: 901,
+            ownerPID: 100,
+            layer: 0,
+            cgBounds: CGRect(x: 120, y: 100, width: 1200, height: 760),
+            ownerName: "Code",
+            ownerBundleIdentifier: "com.microsoft.VSCode"
+        )
+        let secondaryMaximizedBelowMenuBar = ObservedWindowInfo(
+            windowNumber: 902,
+            ownerPID: 200,
+            layer: 0,
+            cgBounds: CGRect(x: 1920, y: 156, width: 1470, height: 924),
+            ownerName: "Google Chrome",
+            ownerBundleIdentifier: "com.google.Chrome"
+        )
+
+        let secondaryMaximizedRect = FocusCoordinateSpace.cgRectToAppKitRect(
+            secondaryMaximizedBelowMenuBar.cgBounds,
+            primaryScreenHeight: 1080
+        )
+        XCTAssertFalse(
+            FocusWindowOrderPlanner.isScreenShowingFullscreenContent(
+                screen: secondary,
+                screenWindows: [(secondaryMaximizedBelowMenuBar, secondaryMaximizedRect)],
+                allWindows: [primaryMenuBar, secondaryMenuBar, primaryWork, secondaryMaximizedBelowMenuBar],
+                selfPID: 999,
+                primaryScreenHeight: 1080,
+                hasObservedSystemMenuBarOnAnyScreen: true,
+                screenHasSystemMenuBar: true,
+                systemMenuBarBottomY: 924
+            )
+        )
+
+        let maximizedPlans = FocusWindowOrderPlanner.plan(
+            screens: screens,
+            windows: [primaryMenuBar, secondaryMenuBar, primaryWork, secondaryMaximizedBelowMenuBar],
+            targetPID: 100,
+            selfPID: 999,
+            isEnabled: true,
+            intensity: 0.60,
+            scope: .frontApplication,
+            dimMenuBar: false,
+            dimDock: false,
+            multiDisplayPolicy: .perDisplayFront,
+            pauseFocusOnFullscreen: true
+        )
+        XCTAssertEqual(maximizedPlans[0].placement, .orderBelow(windowNumber: 901))
+        XCTAssertEqual(maximizedPlans[1].placement, .orderBelow(windowNumber: 902))
+        XCTAssertEqual(maximizedPlans[1].targetAlpha, 0.60, accuracy: 0.0001)
+
+        let secondaryBorderlessFullscreen = ObservedWindowInfo(
+            windowNumber: 903,
+            ownerPID: 300,
+            layer: 0,
+            cgBounds: CGRect(x: 1920, y: 124, width: 1470, height: 956),
+            ownerName: "IINA",
+            ownerBundleIdentifier: "com.colliderli.iina"
+        )
+        let borderlessPlans = FocusWindowOrderPlanner.plan(
+            screens: screens,
+            windows: [primaryMenuBar, secondaryMenuBar, primaryWork, secondaryBorderlessFullscreen],
+            targetPID: 100,
+            selfPID: 999,
+            isEnabled: true,
+            intensity: 0.60,
+            scope: .frontApplication,
+            dimMenuBar: false,
+            dimDock: false,
+            multiDisplayPolicy: .perDisplayFront,
+            pauseFocusOnFullscreen: true
+        )
+        XCTAssertEqual(borderlessPlans[1].placement, .hidden)
+
+        let nativeSpacePlans = FocusWindowOrderPlanner.plan(
+            screens: screens,
+            windows: [primaryMenuBar, primaryWork, secondaryMaximizedBelowMenuBar],
+            targetPID: 100,
+            selfPID: 999,
+            isEnabled: true,
+            intensity: 0.60,
+            scope: .frontApplication,
+            dimMenuBar: false,
+            dimDock: false,
+            multiDisplayPolicy: .dimSecondaryCompletely,
+            pauseFocusOnFullscreen: true
+        )
+        XCTAssertEqual(nativeSpacePlans[0].placement, .orderBelow(windowNumber: 901))
+        XCTAssertEqual(nativeSpacePlans[1].placement, .hidden)
+
+        let highLayerFullscreenPlayer = ObservedWindowInfo(
+            windowNumber: 904,
+            ownerPID: 400,
+            layer: 3,
+            alpha: 1.0,
+            cgBounds: CGRect(x: 1920, y: 124, width: 1470, height: 956),
+            ownerName: "Keynote",
+            ownerBundleIdentifier: "com.apple.iWork.Keynote"
+        )
+        let highLayerPlans = FocusWindowOrderPlanner.plan(
+            screens: screens,
+            windows: [primaryMenuBar, secondaryMenuBar, primaryWork, highLayerFullscreenPlayer],
+            targetPID: 100,
+            selfPID: 999,
+            isEnabled: true,
+            intensity: 0.60,
+            scope: .frontApplication,
+            dimMenuBar: false,
+            dimDock: false,
+            multiDisplayPolicy: .dimSecondaryCompletely,
+            pauseFocusOnFullscreen: true
+        )
+        XCTAssertEqual(highLayerPlans[0].placement, .orderBelow(windowNumber: 901))
+        XCTAssertEqual(highLayerPlans[1].placement, .hidden)
+    }
+
     func testPerDisplayFrontPreservesSecondaryTopWindowAndHidesEmptyOrExcludedSecondary() {
         let primary = ScreenGeometry(
             displayID: 1,

@@ -940,8 +940,12 @@ public enum FocusWindowOrderPlanner {
                isScreenShowingFullscreenContent(
                    screen: screen,
                    screenWindows: screenWindows,
+                   allWindows: windows,
+                   selfPID: selfPID,
+                   primaryScreenHeight: primaryHeight,
                    hasObservedSystemMenuBarOnAnyScreen: hasObservedSystemMenuBar,
-                   screenHasSystemMenuBar: systemMenuBarBottomByDisplay[screen.displayID] != nil
+                   screenHasSystemMenuBar: systemMenuBarBottomByDisplay[screen.displayID] != nil,
+                   systemMenuBarBottomY: systemMenuBarBottomByDisplay[screen.displayID]
                ) {
                 return makeHiddenPlan(for: screen)
             }
@@ -1016,12 +1020,58 @@ public enum FocusWindowOrderPlanner {
     public static func isScreenShowingFullscreenContent(
         screen: ScreenGeometry,
         screenWindows: [(window: ObservedWindowInfo, appKitRect: CGRect)],
+        allWindows: [ObservedWindowInfo] = [],
+        selfPID: Int32 = -1,
+        primaryScreenHeight: Double = 0,
         hasObservedSystemMenuBarOnAnyScreen: Bool = false,
-        screenHasSystemMenuBar: Bool = true
+        screenHasSystemMenuBar: Bool = true,
+        systemMenuBarBottomY: CGFloat? = nil
     ) -> Bool {
-        guard let topEntry = screenWindows.first else { return false }
         guard screen.frame.width > 1, screen.frame.height > 1 else { return false }
 
+        let clampedVisible = screen.visibleFrame.intersection(screen.frame)
+        let effectiveVisible = (clampedVisible.isNull || clampedVisible.isEmpty) ? screen.frame : clampedVisible
+        let menuBarBottomY = FocusScreenPartition.resolvedMenuBarBottomY(
+            screenFrame: screen.frame,
+            visibleFrame: effectiveVisible,
+            safeAreaTopInset: screen.safeAreaTopInset,
+            systemMenuBarBottomY: systemMenuBarBottomY
+        )
+        let menuBarHeight = max(0, screen.frame.maxY - menuBarBottomY)
+        let menuBarAutoHidden = screen.visibleFrame.height >= screen.frame.height - 2.0
+            && screen.safeAreaTopInset <= 2.0
+            && !screenHasSystemMenuBar
+        let hasVisibleMenuBar = screenHasSystemMenuBar
+            && menuBarHeight > FocusBounds.minimumStripThickness
+            && !menuBarAutoHidden
+        let screenArea = screen.frame.width * screen.frame.height
+        let visibleArea = effectiveVisible.width * effectiveVisible.height
+        let effectivePrimaryHeight = primaryScreenHeight > 0 ? primaryScreenHeight : Double(screen.frame.height)
+
+        for window in allWindows {
+            guard window.isOnScreen,
+                  window.layer >= 0,
+                  window.alpha > 0.1,
+                  window.ownerPID != selfPID,
+                  !window.isSystemShellWindow else {
+                continue
+            }
+            let appKitRect = FocusCoordinateSpace.cgRectToAppKitRect(
+                window.cgBounds,
+                primaryScreenHeight: effectivePrimaryHeight
+            )
+            let frameOverlap = appKitRect.intersection(screen.frame)
+            guard !frameOverlap.isNull && !frameOverlap.isEmpty else { continue }
+            let widthRatio = frameOverlap.width / screen.frame.width
+            let heightRatio = frameOverlap.height / screen.frame.height
+            if widthRatio >= 0.98 && heightRatio >= 0.98 {
+                if window.layer > 0 || !hasVisibleMenuBar || frameOverlap.maxY > menuBarBottomY + 2.0 {
+                    return true
+                }
+            }
+        }
+
+        guard let topEntry = screenWindows.first else { return false }
         let topPID = topEntry.window.ownerPID
         var leadingOwnerEntries: [(window: ObservedWindowInfo, appKitRect: CGRect)] = []
         for entry in screenWindows {
@@ -1029,35 +1079,34 @@ public enum FocusWindowOrderPlanner {
             leadingOwnerEntries.append(entry)
         }
 
-        let menuBarAutoHidden = screen.visibleFrame.height >= screen.frame.height - 2.0
-        let visibleArea = screen.visibleFrame.width * screen.visibleFrame.height
-
         for entry in leadingOwnerEntries {
             let frameOverlap = entry.appKitRect.intersection(screen.frame)
-            if !frameOverlap.isNull {
+            if !frameOverlap.isNull && !frameOverlap.isEmpty {
                 let widthRatio = frameOverlap.width / screen.frame.width
                 let heightRatio = frameOverlap.height / screen.frame.height
-                if widthRatio >= 0.92, heightRatio >= 0.92 {
-                    return true
-                }
-            }
+                let frameAreaRatio = (frameOverlap.width * frameOverlap.height) / screenArea
 
-            if menuBarAutoHidden, visibleArea > 1 {
-                let visibleOverlap = entry.appKitRect.intersection(screen.visibleFrame)
-                if !visibleOverlap.isNull {
-                    let areaRatio = (visibleOverlap.width * visibleOverlap.height) / visibleArea
-                    if areaRatio >= 0.95 {
+                if hasVisibleMenuBar {
+                    let invadesMenuBar = frameOverlap.maxY > menuBarBottomY + 2.0
+                    if invadesMenuBar && widthRatio >= 0.95 && heightRatio >= 0.95 {
+                        return true
+                    }
+                } else {
+                    if widthRatio >= 0.98 && heightRatio >= 0.98 {
+                        return true
+                    }
+                    if menuBarAutoHidden && frameAreaRatio >= 0.98 {
                         return true
                     }
                 }
             }
 
-            if hasObservedSystemMenuBarOnAnyScreen, !screenHasSystemMenuBar, visibleArea > 1 {
-                let visibleOverlap = entry.appKitRect.intersection(screen.visibleFrame)
-                if !visibleOverlap.isNull {
-                    let widthRatio = visibleOverlap.width / max(1, screen.visibleFrame.width)
-                    let heightRatio = visibleOverlap.height / max(1, screen.visibleFrame.height)
-                    if widthRatio >= 0.90, heightRatio >= 0.90 {
+            if !screenHasSystemMenuBar && !menuBarAutoHidden, visibleArea > 1 {
+                let visibleOverlap = entry.appKitRect.intersection(effectiveVisible)
+                if !visibleOverlap.isNull && !visibleOverlap.isEmpty {
+                    let visibleWidthRatio = visibleOverlap.width / effectiveVisible.width
+                    let visibleHeightRatio = visibleOverlap.height / effectiveVisible.height
+                    if visibleWidthRatio >= 0.96 && visibleHeightRatio >= 0.96 {
                         return true
                     }
                 }
