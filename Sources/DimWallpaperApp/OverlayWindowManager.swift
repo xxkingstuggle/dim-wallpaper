@@ -31,6 +31,9 @@ final class DimWallpaperController: ObservableObject {
     private var lastFocusFingerprints: [CGDirectDisplayID: FocusDisplayRenderFingerprint] = [:]
     private var focusTargetResolver: FocusTargetResolver
     private var focusPollTimer: Timer?
+    private var focusMouseUpMonitor: Any?
+    private var pendingFastClickCheck: DispatchWorkItem?
+    private var pendingSettleClickCheck: DispatchWorkItem?
     private var isScreenAsleep = false
     private var appearanceObserver: NSKeyValueObservation?
     private var notificationTokens: [NSObjectProtocol] = []
@@ -117,7 +120,7 @@ final class DimWallpaperController: ObservableObject {
         pendingScreenSync = nil
         pendingAppearanceSync?.cancel()
         pendingAppearanceSync = nil
-        stopFocusPollingTimer()
+        stopFocusMonitors()
         flushPersistence()
 
         appearanceObserver?.invalidate()
@@ -159,8 +162,8 @@ final class DimWallpaperController: ObservableObject {
     func setEnabled(_ value: Bool) {
         guard state.snapshot.enabled != value else { return }
         state.setEnabled(value)
-        persistImmediately()
-        applyOverlays(animated: true)
+        applyOverlays(animated: true, durationOverride: 0.07)
+        scheduleDebouncedPersistence()
         onStatusAppearanceChanged?()
     }
 
@@ -172,34 +175,34 @@ final class DimWallpaperController: ObservableObject {
         let clamped = DimmingBounds.clampedIntensity(value)
         guard abs(state.snapshot.intensity - clamped) > 0.0001 else { return }
         state.setIntensity(clamped)
-        scheduleDebouncedPersistence()
         applyOverlays(animated: false)
+        scheduleDebouncedPersistence()
         onStatusAppearanceChanged?()
     }
 
     func applyPreset(_ preset: DimmingPreset) {
         state.applyPreset(preset)
-        persistImmediately()
-        applyOverlays(animated: true)
+        applyOverlays(animated: true, durationOverride: 0.07)
+        scheduleDebouncedPersistence()
         onStatusAppearanceChanged?()
     }
 
     func setDarkOnly(_ value: Bool) {
         guard state.snapshot.darkOnly != value else { return }
         state.setDarkOnly(value)
-        persistImmediately()
-        applyOverlays(animated: true)
+        applyOverlays(animated: true, durationOverride: 0.07)
+        scheduleDebouncedPersistence()
         onStatusAppearanceChanged?()
     }
 
     func setTint(_ value: DimmingTint) {
         guard state.snapshot.tint != value else { return }
         state.setTint(value)
-        persistImmediately()
-        applyOverlays(animated: true)
+        applyOverlays(animated: true, durationOverride: 0.07)
         if state.snapshot.focusTint == .followWallpaper {
-            refreshFocusOverlays(animated: true, forceUpdate: true)
+            refreshFocusOverlays(animated: true, forceUpdate: true, isManualAction: true)
         }
+        scheduleDebouncedPersistence()
         onStatusAppearanceChanged?()
     }
 
@@ -207,31 +210,30 @@ final class DimWallpaperController: ObservableObject {
         let shouldExclude = !included
         guard state.isDisplayExcluded(displayID) != shouldExclude else { return }
         state.setDisplayExcluded(displayID, excluded: shouldExclude)
-        persistImmediately()
-        applyOverlays(animated: true)
-        refreshFocusOverlays(animated: true, forceUpdate: true)
+        applyOverlays(animated: true, durationOverride: 0.07)
+        refreshFocusOverlays(animated: true, forceUpdate: true, isManualAction: true)
+        scheduleDebouncedPersistence()
         onStatusAppearanceChanged?()
     }
 
     func setHotKeyEnabled(_ value: Bool) {
         guard state.snapshot.hotKeyEnabled != value else { return }
         state.setHotKeyEnabled(value)
-        persistImmediately()
         syncHotKeyRegistration()
+        scheduleDebouncedPersistence()
     }
 
     func setFocusEnabled(_ value: Bool) {
         guard state.snapshot.focusEnabled != value else { return }
         state.setFocusEnabled(value)
-        persistImmediately()
-        captureExternalFrontmostAppIfNeeded()
         if value {
-            refreshFocusOverlays(animated: true, forceUpdate: true)
+            refreshFocusOverlays(animated: true, forceUpdate: true, isManualAction: true)
         } else {
             isFocusPausedByExcludedApp = false
-            hideAndReleaseFocusOverlays(animated: true)
+            hidePooledFocusOverlays(animated: true, isManualAction: true)
         }
         syncFocusPollingTimer()
+        scheduleDebouncedPersistence()
         onStatusAppearanceChanged?()
     }
 
@@ -243,56 +245,55 @@ final class DimWallpaperController: ObservableObject {
         let clamped = FocusBounds.clampedIntensity(value)
         guard abs(state.snapshot.focusIntensity - clamped) > 0.0001 else { return }
         state.setFocusIntensity(clamped)
-        scheduleDebouncedPersistence()
         refreshFocusOverlays(animated: false, forceUpdate: true)
+        scheduleDebouncedPersistence()
         onStatusAppearanceChanged?()
     }
 
     func applyFocusPreset(_ preset: FocusPreset) {
         state.applyFocusPreset(preset)
-        persistImmediately()
-        captureExternalFrontmostAppIfNeeded()
-        refreshFocusOverlays(animated: true, forceUpdate: true)
+        refreshFocusOverlays(animated: true, forceUpdate: true, isManualAction: true)
         syncFocusPollingTimer()
+        scheduleDebouncedPersistence()
         onStatusAppearanceChanged?()
     }
 
     func setFocusTint(_ value: FocusTintOption) {
         guard state.snapshot.focusTint != value else { return }
         state.setFocusTint(value)
-        persistImmediately()
-        refreshFocusOverlays(animated: true, forceUpdate: true)
+        refreshFocusOverlays(animated: true, forceUpdate: true, isManualAction: true)
+        scheduleDebouncedPersistence()
         onStatusAppearanceChanged?()
     }
 
     func setFocusScope(_ value: FocusScope) {
         guard state.snapshot.focusScope != value else { return }
         state.setFocusScope(value)
-        persistImmediately()
-        refreshFocusOverlays(animated: true, forceUpdate: true)
+        refreshFocusOverlays(animated: true, forceUpdate: true, isManualAction: true)
+        scheduleDebouncedPersistence()
         onStatusAppearanceChanged?()
     }
 
     func setDimMenuBar(_ value: Bool) {
         guard state.snapshot.dimMenuBar != value else { return }
         state.setDimMenuBar(value)
-        persistImmediately()
-        refreshFocusOverlays(animated: true, forceUpdate: true)
+        refreshFocusOverlays(animated: true, forceUpdate: true, isManualAction: true)
+        scheduleDebouncedPersistence()
         onStatusAppearanceChanged?()
     }
 
     func setDimDock(_ value: Bool) {
         guard state.snapshot.dimDock != value else { return }
         state.setDimDock(value)
-        persistImmediately()
-        refreshFocusOverlays(animated: true, forceUpdate: true)
+        refreshFocusOverlays(animated: true, forceUpdate: true, isManualAction: true)
+        scheduleDebouncedPersistence()
         onStatusAppearanceChanged?()
     }
 
     func applyFocusSystemBarPreset(_ preset: FocusSystemBarPreset) {
         state.applyFocusSystemBarPreset(preset)
-        persistImmediately()
-        refreshFocusOverlays(animated: true, forceUpdate: true)
+        refreshFocusOverlays(animated: true, forceUpdate: true, isManualAction: true)
+        scheduleDebouncedPersistence()
         onStatusAppearanceChanged?()
     }
 
@@ -304,15 +305,15 @@ final class DimWallpaperController: ObservableObject {
     func setFocusMultiDisplayPolicy(_ value: FocusMultiDisplayPolicy) {
         guard state.snapshot.focusMultiDisplayPolicy != value else { return }
         state.setFocusMultiDisplayPolicy(value)
-        persistImmediately()
-        refreshFocusOverlays(animated: true, forceUpdate: true)
+        refreshFocusOverlays(animated: true, forceUpdate: true, isManualAction: true)
+        scheduleDebouncedPersistence()
         onStatusAppearanceChanged?()
     }
 
     func setFocusTransitionSpeed(_ value: FocusTransitionSpeed) {
         guard state.snapshot.focusTransitionSpeed != value else { return }
         state.setFocusTransitionSpeed(value)
-        persistImmediately()
+        scheduleDebouncedPersistence()
         onStatusAppearanceChanged?()
     }
 
@@ -320,9 +321,9 @@ final class DimWallpaperController: ObservableObject {
         let currentlyExcluded = state.isAppExcludedFromFocus(bundleID: bundleID)
         guard currentlyExcluded != excluded else { return }
         state.setFocusExcludedApp(bundleID, excluded: excluded)
-        persistImmediately()
-        refreshFocusOverlays(animated: true, forceUpdate: true)
+        refreshFocusOverlays(animated: true, forceUpdate: true, isManualAction: true)
         syncFocusPollingTimer()
+        scheduleDebouncedPersistence()
         onStatusAppearanceChanged?()
     }
 
@@ -335,17 +336,26 @@ final class DimWallpaperController: ObservableObject {
     func setFocusHotKeyEnabled(_ value: Bool) {
         guard state.snapshot.focusHotKeyEnabled != value else { return }
         state.setFocusHotKeyEnabled(value)
-        persistImmediately()
         syncHotKeyRegistration()
+        scheduleDebouncedPersistence()
+    }
+
+    func recordFrontmostAppFast() {
+        focusTargetResolver.recordFrontmostAppFast(Self.currentFrontmostAppIdentity())
+        if trackedExternalApp != focusTargetResolver.lastExternalFrontmostApp {
+            trackedExternalApp = focusTargetResolver.lastExternalFrontmostApp
+        }
     }
 
     func captureExternalFrontmostAppIfNeeded() {
         let current = Self.currentFrontmostAppIdentity()
         let observedWindows = Self.captureOnScreenWindows()
+        let screenGeometries = Self.captureScreenGeometries()
         _ = focusTargetResolver.resolve(
             currentFrontmost: current,
             excludedBundleIDs: state.snapshot.focusExcludedBundleIDs,
             observedWindows: observedWindows,
+            screens: screenGeometries,
             fallbackAppProvider: Self.appIdentity(forPID:)
         )
         if trackedExternalApp != focusTargetResolver.lastExternalFrontmostApp {
@@ -369,6 +379,13 @@ final class DimWallpaperController: ObservableObject {
         refreshFocusOverlays(animated: false, forceUpdate: true)
         syncFocusPollingTimer()
         onStatusAppearanceChanged?()
+    }
+
+    func refreshDisplaysIfChanged() {
+        let latestDisplays = Self.captureOnlineDisplays()
+        if latestDisplays != state.displays {
+            refreshDisplaysNow()
+        }
     }
 
     // MARK: - Persistence
@@ -438,16 +455,21 @@ final class DimWallpaperController: ObservableObject {
         }
         workspaceTokens.append(spaceToken)
 
-        let activateToken = workspaceCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.handleFrontmostApplicationChanged()
+        let appStateNames: [NSNotification.Name] = [
+            NSWorkspace.didActivateApplicationNotification,
+            NSWorkspace.didDeactivateApplicationNotification,
+            NSWorkspace.didHideApplicationNotification,
+            NSWorkspace.didUnhideApplicationNotification,
+            NSWorkspace.didTerminateApplicationNotification,
+        ]
+        for name in appStateNames {
+            let token = workspaceCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.handleFrontmostApplicationChanged()
+                }
             }
+            workspaceTokens.append(token)
         }
-        workspaceTokens.append(activateToken)
 
         let sleepToken = workspaceCenter.addObserver(
             forName: NSWorkspace.screensDidSleepNotification,
@@ -502,7 +524,7 @@ final class DimWallpaperController: ObservableObject {
             let nextDark = Self.currentSystemIsDark()
             guard nextDark != self.state.isDarkAppearance else { return }
             self.state.isDarkAppearance = nextDark
-            self.applyOverlays(animated: true)
+            self.applyOverlays(animated: true, durationOverride: 0.16)
             self.refreshFocusOverlays(animated: false, forceUpdate: false)
             self.onStatusAppearanceChanged?()
         }
@@ -528,15 +550,17 @@ final class DimWallpaperController: ObservableObject {
     // MARK: - Focus Mode Lifecycle & Window Hosting
 
     private func handleFrontmostApplicationChanged() {
-        captureExternalFrontmostAppIfNeeded()
-        guard state.isFocusGloballyActive, !isScreenAsleep else { return }
+        guard state.isFocusGloballyActive, !isScreenAsleep else {
+            recordFrontmostAppFast()
+            return
+        }
         refreshFocusOverlays(animated: true, forceUpdate: false)
         syncFocusPollingTimer()
     }
 
     private func handleScreensDidSleep() {
         isScreenAsleep = true
-        stopFocusPollingTimer()
+        stopFocusMonitors()
         tearDownAllFocusOverlays()
     }
 
@@ -551,25 +575,64 @@ final class DimWallpaperController: ObservableObject {
             && !isScreenAsleep
             && !isFocusPausedByExcludedApp
         if shouldPoll {
-            guard focusPollTimer == nil else { return }
-            let timer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    self?.refreshFocusOverlays(animated: false, forceUpdate: false)
+            if focusPollTimer == nil {
+                let timer = Timer.scheduledTimer(withTimeInterval: 1.2, repeats: true) { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        self?.refreshFocusOverlays(animated: false, forceUpdate: false)
+                    }
+                }
+                timer.tolerance = 0.3
+                focusPollTimer = timer
+            }
+            if focusMouseUpMonitor == nil {
+                focusMouseUpMonitor = NSEvent.addGlobalMonitorForEvents(
+                    matching: [.leftMouseUp, .rightMouseUp]
+                ) { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        self?.scheduleMouseClickFocusChecks()
+                    }
                 }
             }
-            timer.tolerance = 0.08
-            focusPollTimer = timer
         } else {
-            stopFocusPollingTimer()
+            stopFocusMonitors()
         }
     }
 
-    private func stopFocusPollingTimer() {
+    private func stopFocusMonitors() {
         focusPollTimer?.invalidate()
         focusPollTimer = nil
+        if let monitor = focusMouseUpMonitor {
+            NSEvent.removeMonitor(monitor)
+            focusMouseUpMonitor = nil
+        }
+        pendingFastClickCheck?.cancel()
+        pendingFastClickCheck = nil
+        pendingSettleClickCheck?.cancel()
+        pendingSettleClickCheck = nil
     }
 
-    private func refreshFocusOverlays(animated: Bool, forceUpdate: Bool) {
+    private func scheduleMouseClickFocusChecks() {
+        guard isStarted, state.isFocusGloballyActive, !isScreenAsleep else { return }
+        pendingFastClickCheck?.cancel()
+        pendingSettleClickCheck?.cancel()
+
+        let fastWork = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingFastClickCheck = nil
+            self.refreshFocusOverlays(animated: true, forceUpdate: false)
+        }
+        let settleWork = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingSettleClickCheck = nil
+            self.refreshFocusOverlays(animated: false, forceUpdate: false)
+        }
+        pendingFastClickCheck = fastWork
+        pendingSettleClickCheck = settleWork
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02, execute: fastWork)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: settleWork)
+    }
+
+    private func refreshFocusOverlays(animated: Bool, forceUpdate: Bool, isManualAction: Bool = false) {
         guard isStarted else { return }
 
         guard state.isFocusGloballyActive, !isScreenAsleep else {
@@ -577,16 +640,18 @@ final class DimWallpaperController: ObservableObject {
                 isFocusPausedByExcludedApp = false
                 onStatusAppearanceChanged?()
             }
-            hideAndReleaseFocusOverlays(animated: animated && !isScreenAsleep)
+            hidePooledFocusOverlays(animated: animated && !isScreenAsleep, isManualAction: isManualAction)
             return
         }
 
         let currentFrontmost = Self.currentFrontmostAppIdentity()
         let observedWindows = Self.captureOnScreenWindows()
+        let screenGeometries = Self.captureScreenGeometries()
         let targetResolution = focusTargetResolver.resolve(
             currentFrontmost: currentFrontmost,
             excludedBundleIDs: state.snapshot.focusExcludedBundleIDs,
             observedWindows: observedWindows,
+            screens: screenGeometries,
             fallbackAppProvider: Self.appIdentity(forPID:)
         )
         if trackedExternalApp != focusTargetResolver.lastExternalFrontmostApp {
@@ -612,11 +677,10 @@ final class DimWallpaperController: ObservableObject {
         }
 
         guard !pausedByExclusion else {
-            hideAndReleaseFocusOverlays(animated: animated)
+            hidePooledFocusOverlays(animated: animated, isManualAction: isManualAction)
             return
         }
 
-        let screenGeometries = Self.captureScreenGeometries()
         let plans = FocusWindowOrderPlanner.plan(
             screens: screenGeometries,
             windows: observedWindows,
@@ -640,11 +704,15 @@ final class DimWallpaperController: ObservableObject {
         let screensByID = Self.screensByDisplayID()
         let resolvedTint = state.resolvedFocusTint
         let color = overlayColor(for: resolvedTint)
-        let duration = animated
-            ? state.snapshot.focusTransitionSpeed.resolvedDuration(
-                reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-            )
-            : 0.0
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let duration: TimeInterval
+        if animated {
+            duration = isManualAction
+                ? state.snapshot.focusTransitionSpeed.resolvedManualDuration(reduceMotion: reduceMotion)
+                : state.snapshot.focusTransitionSpeed.resolvedDuration(reduceMotion: reduceMotion)
+        } else {
+            duration = 0.0
+        }
 
         for plan in plans {
             let fingerprint = FocusDisplayRenderFingerprint(
@@ -678,7 +746,7 @@ final class DimWallpaperController: ObservableObject {
 
         guard plan.shouldShow else {
             guard let group = focusGroups[displayID] else { return }
-            fadeOutAndReleaseFocusGroup(group, displayID: displayID, token: nextToken, duration: duration)
+            fadeOutAndHideFocusGroup(group, displayID: displayID, token: nextToken, duration: duration)
             return
         }
 
@@ -737,18 +805,24 @@ final class DimWallpaperController: ObservableObject {
             menuWindow.orderFrontRegardless()
             animateWindowAlpha(menuWindow, to: targetAlpha, duration: duration)
         } else if let existingMenuWindow = group.menuBarWindow {
-            group.menuBarWindow = nil
             existingMenuWindow.alphaValue = 0
             existingMenuWindow.orderOut(nil)
-            existingMenuWindow.close()
         }
 
         let desiredDockRects = plan.partition.dockStripRects
-        while group.dockWindows.count > desiredDockRects.count {
+        let maxPooledDockWindows = max(4, desiredDockRects.count)
+        while group.dockWindows.count > maxPooledDockWindows {
             let extra = group.dockWindows.removeLast()
             extra.alphaValue = 0
             extra.orderOut(nil)
             extra.close()
+        }
+        if desiredDockRects.count < group.dockWindows.count {
+            for index in desiredDockRects.count..<group.dockWindows.count {
+                let unusedWindow = group.dockWindows[index]
+                unusedWindow.alphaValue = 0
+                unusedWindow.orderOut(nil)
+            }
         }
         for (index, dockRect) in desiredDockRects.enumerated() {
             let dockWindow: NSWindow
@@ -772,39 +846,47 @@ final class DimWallpaperController: ObservableObject {
         }
     }
 
-    private func hideAndReleaseFocusOverlays(animated: Bool) {
+    private func hidePooledFocusOverlays(animated: Bool, isManualAction: Bool = false) {
         guard !focusGroups.isEmpty else {
             lastFocusFingerprints.removeAll()
             return
         }
-        let duration = animated
-            ? state.snapshot.focusTransitionSpeed.resolvedDuration(
-                reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-            )
-            : 0.0
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let duration: TimeInterval
+        if animated {
+            duration = isManualAction
+                ? state.snapshot.focusTransitionSpeed.resolvedManualDuration(reduceMotion: reduceMotion)
+                : state.snapshot.focusTransitionSpeed.resolvedDuration(reduceMotion: reduceMotion)
+        } else {
+            duration = 0.0
+        }
         for (displayID, group) in focusGroups {
             let nextToken = (focusAnimationTokens[displayID] ?? 0) &+ 1
             focusAnimationTokens[displayID] = nextToken
             lastFocusFingerprints.removeValue(forKey: displayID)
-            fadeOutAndReleaseFocusGroup(group, displayID: displayID, token: nextToken, duration: duration)
+            fadeOutAndHideFocusGroup(group, displayID: displayID, token: nextToken, duration: duration)
         }
     }
 
-    private func fadeOutAndReleaseFocusGroup(
+    private func fadeOutAndHideFocusGroup(
         _ group: FocusDisplayOverlayGroup,
         displayID: CGDirectDisplayID,
         token: UInt64,
         duration: TimeInterval
     ) {
+        let visibleWindows = group.allWindows.filter { $0.isVisible || $0.alphaValue > CGFloat(FocusBounds.visibilityEpsilon) }
         let allWindows = group.allWindows
+        if visibleWindows.isEmpty {
+            for window in allWindows {
+                window.alphaValue = 0
+                window.orderOut(nil)
+            }
+            return
+        }
         if duration <= 0.001 {
             for window in allWindows {
                 window.alphaValue = 0
                 window.orderOut(nil)
-                window.close()
-            }
-            if focusGroups[displayID] === group {
-                focusGroups.removeValue(forKey: displayID)
             }
             return
         }
@@ -813,7 +895,7 @@ final class DimWallpaperController: ObservableObject {
             context.duration = duration
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             context.allowsImplicitAnimation = true
-            for window in allWindows {
+            for window in visibleWindows {
                 window.animator().alphaValue = 0
             }
         }, completionHandler: { [weak self] in
@@ -822,10 +904,6 @@ final class DimWallpaperController: ObservableObject {
                 for window in allWindows {
                     window.alphaValue = 0
                     window.orderOut(nil)
-                    window.close()
-                }
-                if self.focusGroups[displayID] === group {
-                    self.focusGroups.removeValue(forKey: displayID)
                 }
             }
         })
@@ -856,7 +934,7 @@ final class DimWallpaperController: ObservableObject {
         if duration > 0.001 {
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = duration
-                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 context.allowsImplicitAnimation = true
                 window.animator().alphaValue = targetAlpha
             }
@@ -938,7 +1016,8 @@ final class DimWallpaperController: ObservableObject {
                     displayID: displayID,
                     frame: screen.frame,
                     visibleFrame: screen.visibleFrame,
-                    isPrimary: index == 0
+                    isPrimary: index == 0,
+                    safeAreaTopInset: screen.safeAreaInsets.top
                 )
             )
         }
@@ -955,6 +1034,7 @@ final class DimWallpaperController: ObservableObject {
 
         var result: [ObservedWindowInfo] = []
         result.reserveCapacity(rawList.count)
+        var bundleIDByPID: [Int32: String?] = [:]
 
         for entry in rawList {
             guard let windowNumber = (entry[kCGWindowNumber as String] as? NSNumber)?.intValue,
@@ -966,6 +1046,15 @@ final class DimWallpaperController: ObservableObject {
             let layer = (entry[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
             let alpha = (entry[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1.0
             let isOnScreen = (entry[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue ?? true
+            let ownerName = entry[kCGWindowOwnerName as String] as? String
+            let ownerBundleID: String?
+            if let cached = bundleIDByPID[ownerPID] {
+                ownerBundleID = cached
+            } else {
+                let resolved = NSRunningApplication(processIdentifier: ownerPID)?.bundleIdentifier
+                bundleIDByPID[ownerPID] = resolved
+                ownerBundleID = resolved
+            }
             result.append(
                 ObservedWindowInfo(
                     windowNumber: windowNumber,
@@ -973,7 +1062,9 @@ final class DimWallpaperController: ObservableObject {
                     layer: layer,
                     alpha: alpha,
                     cgBounds: cgBounds,
-                    isOnScreen: isOnScreen
+                    isOnScreen: isOnScreen,
+                    ownerName: ownerName,
+                    ownerBundleIdentifier: ownerBundleID
                 )
             )
         }
@@ -1069,9 +1160,11 @@ final class DimWallpaperController: ObservableObject {
         }
     }
 
-    private func applyOverlays(animated: Bool) {
+    private func applyOverlays(animated: Bool, durationOverride: TimeInterval? = nil) {
         let color = overlayColor(for: state.snapshot.tint)
         let shouldAnimate = animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let fadeInDuration = durationOverride ?? 0.08
+        let fadeOutDuration = durationOverride ?? 0.08
         for (displayID, window) in windows {
             let decision = state.decision(for: displayID)
             let nextToken = (animationTokens[displayID] ?? 0) &+ 1
@@ -1090,8 +1183,8 @@ final class DimWallpaperController: ObservableObject {
                 }
                 if shouldAnimate {
                     NSAnimationContext.runAnimationGroup { context in
-                        context.duration = 0.28
-                        context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                        context.duration = fadeInDuration
+                        context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                         context.allowsImplicitAnimation = true
                         window.animator().alphaValue = targetAlpha
                     }
@@ -1108,8 +1201,8 @@ final class DimWallpaperController: ObservableObject {
                 }
                 if shouldAnimate {
                     NSAnimationContext.runAnimationGroup({ context in
-                        context.duration = 0.24
-                        context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                        context.duration = fadeOutDuration
+                        context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                         context.allowsImplicitAnimation = true
                         window.animator().alphaValue = 0
                     }, completionHandler: { [weak self] in

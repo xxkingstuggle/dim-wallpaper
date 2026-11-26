@@ -14,7 +14,7 @@ Swift 6、AppKit、SwiftUI、Carbon、ServiceManagement 和 macOS 系统工具�
 
 ## 安全红线
 - 严禁调用任何修改硬件显示模式、Gamma、色表或亮度的 API（如 `CGSetDisplayTransfer*`、`CGConfigureDisplay*`），只允许只读屏幕/窗口查询与无边框鼠标穿透 `NSWindow`。
-- 专注遮罩菜单栏/Dock 分条必须与主遮罩严格无重叠分割，且位于对应系统栏层级之上、下拉菜单层级之下；停用、豁免或息屏时 `orderOut` 并销毁释放。
+- 专注遮罩菜单栏/Dock 分条必须与主遮罩严格无重叠分割（`dimMenuBar == false` 时主遮罩顶边严禁渗入菜单栏底边之上），且位于对应系统栏层级之上、下拉菜单层级之下；停用或豁免时立即 `alphaValue = 0; orderOut(nil)` 并按显示器池化复用，仅在显示器拔出、息屏或应用退出时 `close()` 销毁。
 
 ## 当前状态与下一步
 README.md 区分已验证行为和未验证场景。改窗口层级或显示器处理时，保留这一区分并按实际设备验证。

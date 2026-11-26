@@ -12,6 +12,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
     private var popover: NSPopover?
     private var globalClickMonitor: Any?
     private var localKeyMonitor: Any?
+    private var lastStatusSymbolName: String?
+    private var lastStatusToolTip: String?
 
     init(launchOptions: LaunchOptions) {
         self.launchOptions = launchOptions
@@ -36,7 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
             button.imagePosition = .imageOnly
             button.target = self
             button.action = #selector(statusItemClicked(_:))
-            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            button.sendAction(on: [.leftMouseDown, .rightMouseDown])
         }
         statusItem = item
 
@@ -51,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
 
         let panelPopover = NSPopover()
         panelPopover.behavior = .transient
-        panelPopover.animates = true
+        panelPopover.animates = false
         panelPopover.delegate = self
         panelPopover.contentViewController = hostingController
         popover = panelPopover
@@ -73,7 +75,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
 
     @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
         let event = NSApp.currentEvent
-        let isContextTrigger = event?.type == .rightMouseUp
+        let isContextTrigger = event?.type == .rightMouseDown
+            || event?.type == .rightMouseUp
             || (event?.modifierFlags.contains(.control) == true)
 
         if isContextTrigger {
@@ -89,12 +92,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
         if popover.isShown {
             closePopover()
         } else {
-            controller.captureExternalFrontmostAppIfNeeded()
-            controller.refreshLoginStatus()
-            controller.refreshDisplaysNow()
+            controller.recordFrontmostAppFast()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
             installPopoverMonitors()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.controller.refreshLoginStatus()
+                self.controller.refreshDisplaysIfChanged()
+            }
         }
     }
 
@@ -137,11 +143,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
     // MARK: - Right-Click Quick Menu
 
     private func showQuickMenu(anchoredTo button: NSStatusBarButton) {
-        controller.captureExternalFrontmostAppIfNeeded()
-        controller.refreshLoginStatus()
+        controller.recordFrontmostAppFast()
         let menu = buildQuickMenu()
         menu.delegate = self
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
+        DispatchQueue.main.async { [weak self] in
+            self?.controller.refreshLoginStatus()
+        }
     }
 
     private func buildQuickMenu() -> NSMenu {
@@ -246,6 +254,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
         versionItem.isEnabled = false
         menu.addItem(versionItem)
 
+        let websiteItem = NSMenuItem(title: "访问官网 myzjx.com", action: #selector(openWebsiteFromMenu), keyEquivalent: "")
+        websiteItem.target = self
+        menu.addItem(websiteItem)
+
         let quitItem = NSMenuItem(title: "退出 DimWallpaper", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quitItem.target = NSApp
         menu.addItem(quitItem)
@@ -298,15 +310,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
         }
     }
 
+    @objc private func openWebsiteFromMenu() {
+        if let url = URL(string: "https://myzjx.com") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     private func updateStatusIcon() {
         guard let button = statusItem?.button else { return }
-        let image = NSImage(
-            systemSymbolName: controller.state.statusSymbolName,
-            accessibilityDescription: "壁纸调暗"
-        )
-        image?.isTemplate = true
-        button.image = image
-        button.toolTip = "DimWallpaper · \(controller.state.statusSummary)"
+        let symbolName = controller.state.statusSymbolName
+        if symbolName != lastStatusSymbolName {
+            let image = NSImage(
+                systemSymbolName: symbolName,
+                accessibilityDescription: "壁纸调暗"
+            )
+            image?.isTemplate = true
+            button.image = image
+            lastStatusSymbolName = symbolName
+        }
+        let nextToolTip = "DimWallpaper · \(controller.state.statusSummary)"
+        if nextToolTip != lastStatusToolTip {
+            button.toolTip = nextToolTip
+            lastStatusToolTip = nextToolTip
+        }
     }
 
     private func presentError(_ message: String) {

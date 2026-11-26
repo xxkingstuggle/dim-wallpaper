@@ -229,11 +229,15 @@ final class DimWallpaperCoreTests: XCTestCase {
         XCTAssertEqual(FocusPreset.matching(intensity: 0.85), .deep)
         XCTAssertNil(FocusPreset.matching(intensity: 0.55))
 
-        XCTAssertEqual(FocusTransitionSpeed.gentle.resolvedDuration(reduceMotion: false), 0.18, accuracy: 0.0001)
-        XCTAssertEqual(FocusTransitionSpeed.snappy.resolvedDuration(reduceMotion: false), 0.08, accuracy: 0.0001)
+        XCTAssertEqual(FocusTransitionSpeed.gentle.resolvedDuration(reduceMotion: false), 0.11, accuracy: 0.0001)
+        XCTAssertEqual(FocusTransitionSpeed.snappy.resolvedDuration(reduceMotion: false), 0.06, accuracy: 0.0001)
         XCTAssertEqual(FocusTransitionSpeed.instant.resolvedDuration(reduceMotion: false), 0.0, accuracy: 0.0001)
         XCTAssertEqual(FocusTransitionSpeed.gentle.resolvedDuration(reduceMotion: true), 0.0, accuracy: 0.0001)
         XCTAssertEqual(FocusTransitionSpeed.snappy.resolvedDuration(reduceMotion: true), 0.0, accuracy: 0.0001)
+        XCTAssertEqual(FocusTransitionSpeed.gentle.resolvedManualDuration(reduceMotion: false), 0.07, accuracy: 0.0001)
+        XCTAssertEqual(FocusTransitionSpeed.snappy.resolvedManualDuration(reduceMotion: false), 0.06, accuracy: 0.0001)
+        XCTAssertEqual(FocusTransitionSpeed.instant.resolvedManualDuration(reduceMotion: false), 0.0, accuracy: 0.0001)
+        XCTAssertEqual(FocusTransitionSpeed.gentle.resolvedManualDuration(reduceMotion: true), 0.0, accuracy: 0.0001)
 
         XCTAssertEqual(FocusSystemBarPreset.matching(dimMenuBar: false, dimDock: false), .keepSystemBars)
         XCTAssertEqual(FocusSystemBarPreset.matching(dimMenuBar: true, dimDock: true), .dimAll)
@@ -294,10 +298,10 @@ final class DimWallpaperCoreTests: XCTestCase {
             dimDock: false,
             foregroundWindowFrames: []
         )
-        XCTAssertEqual(noBars.mainRect, screen)
+        XCTAssertEqual(noBars.mainRect, CGRect(x: 0, y: 0, width: 1920, height: 1055))
         XCTAssertNil(noBars.menuBarStripRect)
         XCTAssertTrue(noBars.dockStripRects.isEmpty)
-        assertPartitionDisjoint(noBars.allRects, expectedTotalArea: screen.width * screen.height, inside: screen)
+        assertPartitionDisjoint(noBars.allRects, expectedTotalArea: 1920 * 1055, inside: screen)
 
         let bottomDockVisible = CGRect(x: 0, y: 72, width: 1920, height: 983)
         let bottomPartition = FocusScreenPartition.partition(
@@ -631,7 +635,7 @@ final class DimWallpaperCoreTests: XCTestCase {
         XCTAssertFalse(migrated.dimMenuBar)
         XCTAssertFalse(migrated.dimDock)
         XCTAssertEqual(migrated.focusMultiDisplayPolicy, .dimInactiveScreens)
-        XCTAssertEqual(migrated.focusTransitionSpeed, .gentle)
+        XCTAssertEqual(migrated.focusTransitionSpeed, .snappy)
         XCTAssertTrue(migrated.focusExcludedBundleIDs.isEmpty)
         XCTAssertTrue(migrated.focusHotKeyEnabled)
         XCTAssertEqual(migrated.focusHotKeyBinding, .defaultFocusToggle)
@@ -721,6 +725,245 @@ final class DimWallpaperCoreTests: XCTestCase {
         XCTAssertTrue(report.legacyLine().contains("focusEnabled=true focusIntensity=0.7 focusScope=frontWindow dimMenuBar=true dimDock=true focusHotKeyEnabled=false"))
         let decodedReport = try JSONDecoder().decode(DiagnosticReport.self, from: Data(try report.jsonString().utf8))
         XCTAssertEqual(decodedReport, report)
+    }
+
+    func testMenuBarExclusionWhenDimMenuBarDisabledAcrossDockStatesAndNotch() {
+        let primaryScreen = ScreenGeometry(
+            displayID: 2,
+            frame: CGRect(x: 0, y: 0, width: 1920, height: 1080),
+            visibleFrame: CGRect(x: 0, y: 75, width: 1920, height: 975),
+            isPrimary: true,
+            safeAreaTopInset: 0
+        )
+        let notchedScreen = ScreenGeometry(
+            displayID: 1,
+            frame: CGRect(x: 1920, y: 0, width: 1470, height: 956),
+            visibleFrame: CGRect(x: 1920, y: 0, width: 1470, height: 924),
+            isPrimary: false,
+            safeAreaTopInset: 32
+        )
+        let mainMenuLayer = Int(CGWindowLevelForKey(.mainMenuWindow))
+        let windows: [ObservedWindowInfo] = [
+            ObservedWindowInfo(
+                windowNumber: 14,
+                ownerPID: 412,
+                layer: mainMenuLayer,
+                alpha: 1.0,
+                cgBounds: CGRect(x: 0, y: 0, width: 1920, height: 30),
+                ownerName: "Window Server"
+            ),
+            ObservedWindowInfo(
+                windowNumber: 16,
+                ownerPID: 412,
+                layer: mainMenuLayer,
+                alpha: 1.0,
+                cgBounds: CGRect(x: 1920, y: 124, width: 1470, height: 33),
+                ownerName: "Window Server"
+            ),
+            ObservedWindowInfo(
+                windowNumber: 1049,
+                ownerPID: 13751,
+                layer: 0,
+                alpha: 1.0,
+                cgBounds: CGRect(x: 160, y: 30, width: 1600, height: 975),
+                ownerName: "ChatGPT",
+                ownerBundleIdentifier: "com.openai.codex"
+            ),
+        ]
+
+        for dimDock in [false, true] {
+            let plans = FocusWindowOrderPlanner.plan(
+                screens: [primaryScreen, notchedScreen],
+                windows: windows,
+                targetPID: 13751,
+                selfPID: 999,
+                isEnabled: true,
+                intensity: 0.61,
+                scope: .frontApplication,
+                dimMenuBar: false,
+                dimDock: dimDock,
+                multiDisplayPolicy: .dimInactiveScreens
+            )
+            XCTAssertEqual(plans.count, 2)
+
+            let primaryMenuBarBand = CGRect(x: 0, y: 1050, width: 1920, height: 30)
+            XCTAssertNil(plans[0].partition.menuBarStripRect)
+            XCTAssertLessThanOrEqual(plans[0].partition.mainRect.maxY, 1050.0)
+            let primaryHit = plans[0].partition.mainRect.intersection(primaryMenuBarBand)
+            XCTAssertTrue(primaryHit.isNull || primaryHit.isEmpty || primaryHit.width * primaryHit.height < 0.001)
+
+            let notchedMenuBarBand = CGRect(x: 1920, y: 923, width: 1470, height: 33)
+            XCTAssertNil(plans[1].partition.menuBarStripRect)
+            XCTAssertEqual(plans[1].partition.mainRect.maxY, 923.0, accuracy: 0.001)
+            let notchedHit = plans[1].partition.mainRect.intersection(notchedMenuBarBand)
+            XCTAssertTrue(notchedHit.isNull || notchedHit.isEmpty || notchedHit.width * notchedHit.height < 0.001)
+        }
+
+        let dimmedPlans = FocusWindowOrderPlanner.plan(
+            screens: [primaryScreen, notchedScreen],
+            windows: windows,
+            targetPID: 13751,
+            selfPID: 999,
+            isEnabled: true,
+            intensity: 0.61,
+            scope: .frontApplication,
+            dimMenuBar: true,
+            dimDock: false,
+            multiDisplayPolicy: .dimInactiveScreens
+        )
+        XCTAssertEqual(dimmedPlans[1].partition.menuBarStripRect, CGRect(x: 1920, y: 923, width: 1470, height: 33))
+        XCTAssertEqual(dimmedPlans[1].partition.mainRect, CGRect(x: 1920, y: 0, width: 1470, height: 923))
+        assertPartitionDisjoint(dimmedPlans[1].partition.allRects, expectedTotalArea: 1470 * 956, inside: notchedScreen.frame)
+    }
+
+    func testStageManagerSidebarThumbnailsAndShowDesktopEdgeWindowsExcluded() {
+        let primary = ScreenGeometry(
+            displayID: 2,
+            frame: CGRect(x: 0, y: 0, width: 1920, height: 1080),
+            visibleFrame: CGRect(x: 0, y: 75, width: 1920, height: 975),
+            isPrimary: true
+        )
+        let stageOnlyWindows: [ObservedWindowInfo] = [
+            ObservedWindowInfo(
+                windowNumber: 254,
+                ownerPID: 668,
+                layer: 0,
+                alpha: 1.0,
+                cgBounds: CGRect(x: 15, y: 244, width: 122, height: 136),
+                ownerName: "WindowManager",
+                ownerBundleIdentifier: "com.apple.WindowManager"
+            ),
+            ObservedWindowInfo(
+                windowNumber: 1030,
+                ownerPID: 841,
+                layer: 0,
+                alpha: 1.0,
+                cgBounds: CGRect(x: 15, y: 244, width: 122, height: 136),
+                ownerName: "magpie",
+                ownerBundleIdentifier: "com.yetone.magpie"
+            ),
+            ObservedWindowInfo(
+                windowNumber: 266,
+                ownerPID: 668,
+                layer: 0,
+                alpha: 1.0,
+                cgBounds: CGRect(x: 15, y: 395, width: 162, height: 141),
+                ownerName: "WindowManager",
+                ownerBundleIdentifier: "com.apple.WindowManager"
+            ),
+            ObservedWindowInfo(
+                windowNumber: 931,
+                ownerPID: 1632,
+                layer: 0,
+                alpha: 1.0,
+                cgBounds: CGRect(x: 17, y: 396, width: 158, height: 139),
+                ownerName: "Google Chrome",
+                ownerBundleIdentifier: "com.google.Chrome"
+            ),
+            ObservedWindowInfo(
+                windowNumber: 500,
+                ownerPID: 1632,
+                layer: 0,
+                alpha: 1.0,
+                cgBounds: CGRect(x: 1875, y: 120, width: 1200, height: 800),
+                ownerName: "Google Chrome",
+                ownerBundleIdentifier: "com.google.Chrome"
+            ),
+        ]
+
+        let filtered = FocusWindowOrderPlanner.filteredActiveStageWindows(
+            windows: stageOnlyWindows,
+            screens: [primary],
+            excludingSelfPID: 999
+        )
+        XCTAssertTrue(filtered.isEmpty)
+
+        let plans = FocusWindowOrderPlanner.plan(
+            screens: [primary],
+            windows: stageOnlyWindows,
+            targetPID: 1632,
+            selfPID: 999,
+            isEnabled: true,
+            intensity: 0.50,
+            scope: .frontApplication,
+            dimMenuBar: false,
+            dimDock: false,
+            multiDisplayPolicy: .dimInactiveScreens
+        )
+        XCTAssertEqual(plans[0].placement, .hidden)
+        XCTAssertEqual(plans[0].targetAlpha, 0.0, accuracy: 0.0001)
+        XCTAssertFalse(plans[0].shouldShow)
+    }
+
+    func testDesktopStateAndGlobalForegroundWindowGateHideAllDisplays() {
+        let selfPID: Int32 = 999
+        let primary = ScreenGeometry(
+            displayID: 1,
+            frame: CGRect(x: 0, y: 0, width: 1920, height: 1080),
+            visibleFrame: CGRect(x: 0, y: 70, width: 1920, height: 980),
+            isPrimary: true
+        )
+        let secondary = ScreenGeometry(
+            displayID: 2,
+            frame: CGRect(x: 1920, y: 0, width: 1470, height: 956),
+            visibleFrame: CGRect(x: 1920, y: 0, width: 1470, height: 924),
+            isPrimary: false
+        )
+        let screens = [primary, secondary]
+
+        let safari = FocusAppIdentity(pid: 201, bundleIdentifier: "com.apple.Safari", localizedName: "Safari")
+        let windowManager = FocusAppIdentity(pid: 668, bundleIdentifier: "com.apple.WindowManager", localizedName: "WindowManager", isRegularActivationPolicy: false)
+        let dock = FocusAppIdentity(pid: 669, bundleIdentifier: "com.apple.dock", localizedName: "Dock", isRegularActivationPolicy: false)
+        let finder = FocusAppIdentity(pid: 205, bundleIdentifier: "com.apple.finder", localizedName: "Finder")
+        let selfApp = FocusAppIdentity(pid: selfPID, bundleIdentifier: "local.zjx.DimWallpaper", localizedName: "DimWallpaper", isRegularActivationPolicy: false)
+
+        let backgroundWindow = ObservedWindowInfo(
+            windowNumber: 345,
+            ownerPID: 3078,
+            layer: 0,
+            alpha: 1.0,
+            cgBounds: CGRect(x: 2042, y: 157, width: 1225, height: 923),
+            ownerName: "QQ",
+            ownerBundleIdentifier: "com.tencent.qq"
+        )
+
+        var resolver = FocusTargetResolver(selfPID: selfPID)
+        XCTAssertEqual(resolver.resolve(currentFrontmost: safari, excludedBundleIDs: [], observedWindows: [backgroundWindow], screens: screens), .active(safari))
+
+        XCTAssertEqual(resolver.resolve(currentFrontmost: windowManager, excludedBundleIDs: [], observedWindows: [backgroundWindow], screens: screens), .unavailable)
+        XCTAssertTrue(resolver.isInDesktopState)
+        XCTAssertNil(resolver.lastExternalFrontmostApp)
+
+        XCTAssertEqual(resolver.resolve(currentFrontmost: selfApp, excludedBundleIDs: [], observedWindows: [backgroundWindow], screens: screens), .unavailable)
+        XCTAssertTrue(resolver.isInDesktopState)
+
+        XCTAssertEqual(resolver.resolve(currentFrontmost: dock, excludedBundleIDs: [], observedWindows: [backgroundWindow], screens: screens), .unavailable)
+        XCTAssertTrue(resolver.isInDesktopState)
+
+        XCTAssertEqual(resolver.resolve(currentFrontmost: finder, excludedBundleIDs: [], observedWindows: [backgroundWindow], screens: screens), .active(finder))
+        let finderDesktopPlans = FocusWindowOrderPlanner.plan(
+            screens: screens,
+            windows: [backgroundWindow],
+            targetPID: finder.pid,
+            selfPID: selfPID,
+            isEnabled: true,
+            intensity: 0.55,
+            scope: .frontApplication,
+            dimMenuBar: false,
+            dimDock: false,
+            multiDisplayPolicy: .dimInactiveScreens
+        )
+        XCTAssertEqual(finderDesktopPlans.map(\.placement), [.hidden, .hidden])
+        XCTAssertEqual(finderDesktopPlans.map(\.targetAlpha), [0.0, 0.0])
+
+        resolver.recordFrontmostAppFast(windowManager)
+        XCTAssertTrue(resolver.isInDesktopState)
+        XCTAssertNil(resolver.lastExternalFrontmostApp)
+        resolver.recordFrontmostAppFast(selfApp)
+        XCTAssertTrue(resolver.isInDesktopState)
+        resolver.recordFrontmostAppFast(safari)
+        XCTAssertFalse(resolver.isInDesktopState)
+        XCTAssertEqual(resolver.lastExternalFrontmostApp, safari)
     }
 
     private func assertPartitionDisjoint(

@@ -76,6 +76,7 @@ struct ControlCenterView: View {
                     VStack(spacing: 9) {
                         hotKeyCard
                         generalInfoCard
+                        aboutAppCard
                     }
                 }
             }
@@ -951,6 +952,69 @@ struct ControlCenterView: View {
         .background(cardSurface)
     }
 
+    private var aboutAppCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 9) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 30, height: 30)
+                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                VStack(alignment: .leading, spacing: 1.5) {
+                    HStack(spacing: 6) {
+                        Text("DimWallpaper")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("v\(version)")
+                            .font(.system(size: 10, weight: .medium).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("张家鑫 · Xin (@xxkingstuggle)")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+
+            HStack(spacing: 6) {
+                aboutLinkPill(title: "官网 myzjx.com", symbol: "globe", urlString: "https://myzjx.com")
+                aboutLinkPill(title: "产品主页", symbol: "sparkles", urlString: "https://myzjx.com/software/dim-wallpaper/")
+                aboutLinkPill(title: "GitHub", symbol: "chevron.left.forwardslash.chevron.right", urlString: "https://github.com/xxkingstuggle")
+            }
+
+            Text("© 2026 Xin (@xxkingstuggle) · MIT License")
+                .font(.system(size: 9.5))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(11)
+        .background(cardSurface)
+    }
+
+    private func aboutLinkPill(title: String, symbol: String, urlString: String) -> some View {
+        Button {
+            if let url = URL(string: urlString) {
+                NSWorkspace.shared.open(url)
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: symbol)
+                    .font(.system(size: 9.5, weight: .medium))
+                Text(title)
+                    .font(.system(size: 10, weight: .medium))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(
+                Capsule()
+                    .fill(colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.055))
+            )
+            .overlay(Capsule().stroke(cardBorderColor, lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .help(urlString)
+    }
+
     private var footerBar: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let loginError = controller.loginError {
@@ -981,6 +1045,19 @@ struct ControlCenterView: View {
                 .buttonStyle(.plain)
 
                 Spacer()
+
+                Button {
+                    if let url = URL(string: "https://myzjx.com/software/dim-wallpaper/") {
+                        NSWorkspace.shared.open(url)
+                    }
+                } label: {
+                    Text("@xxkingstuggle · myzjx.com")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .buttonStyle(.plain)
+                .help("访问 DimWallpaper 官网主页 (myzjx.com)")
 
                 Text("v\(version)")
                     .font(.system(size: 10.5).monospacedDigit())
