@@ -185,7 +185,8 @@ public struct LaunchOptions: Equatable, Sendable {
     public var focusScopeOverride: FocusScope?
     public var focusMultiDisplayPolicyOverride: FocusMultiDisplayPolicy?
     public var pauseFocusOnFullscreenOverride: Bool?
-    public var focusEdgeFeatherOverride: FocusEdgeFeather?
+    public var focusTransitionStyleOverride: FocusTransitionStyle?
+    public var focusTransitionDurationOverride: Double?
 
     public init(
         printStatus: Bool = false,
@@ -200,7 +201,8 @@ public struct LaunchOptions: Equatable, Sendable {
         focusScopeOverride: FocusScope? = nil,
         focusMultiDisplayPolicyOverride: FocusMultiDisplayPolicy? = nil,
         pauseFocusOnFullscreenOverride: Bool? = nil,
-        focusEdgeFeatherOverride: FocusEdgeFeather? = nil
+        focusTransitionStyleOverride: FocusTransitionStyle? = nil,
+        focusTransitionDurationOverride: Double? = nil
     ) {
         self.printStatus = printStatus
         self.printStatusJSON = printStatusJSON
@@ -214,7 +216,8 @@ public struct LaunchOptions: Equatable, Sendable {
         self.focusScopeOverride = focusScopeOverride
         self.focusMultiDisplayPolicyOverride = focusMultiDisplayPolicyOverride
         self.pauseFocusOnFullscreenOverride = pauseFocusOnFullscreenOverride
-        self.focusEdgeFeatherOverride = focusEdgeFeatherOverride
+        self.focusTransitionStyleOverride = focusTransitionStyleOverride
+        self.focusTransitionDurationOverride = focusTransitionDurationOverride.map(FocusBounds.clampedTransitionDuration)
     }
 
     public var hasFocusOverrides: Bool {
@@ -225,7 +228,8 @@ public struct LaunchOptions: Equatable, Sendable {
             || focusScopeOverride != nil
             || focusMultiDisplayPolicyOverride != nil
             || pauseFocusOnFullscreenOverride != nil
-            || focusEdgeFeatherOverride != nil
+            || focusTransitionStyleOverride != nil
+            || focusTransitionDurationOverride != nil
     }
 
     public func applyingOverrides(to snapshot: DimmingSnapshot) -> DimmingSnapshot {
@@ -251,8 +255,11 @@ public struct LaunchOptions: Equatable, Sendable {
         if let pauseFocusOnFullscreenOverride {
             updated.pauseFocusOnFullscreen = pauseFocusOnFullscreenOverride
         }
-        if let focusEdgeFeatherOverride {
-            updated.focusEdgeFeather = focusEdgeFeatherOverride
+        if let focusTransitionStyleOverride {
+            updated.focusTransitionStyle = focusTransitionStyleOverride
+        }
+        if let focusTransitionDurationOverride {
+            updated.focusTransitionDuration = FocusBounds.clampedTransitionDuration(focusTransitionDurationOverride)
         }
         return updated
     }
@@ -315,9 +322,13 @@ public struct LaunchOptions: Equatable, Sendable {
                 if let rawValue = nextValue(after: &index, in: arguments), let parsed = parseBool(rawValue) {
                     options.pauseFocusOnFullscreenOverride = parsed
                 }
-            case "--focus-feather":
+            case "--focus-transition-style":
                 if let rawValue = nextValue(after: &index, in: arguments) {
-                    options.focusEdgeFeatherOverride = FocusEdgeFeather.fromStoredValue(rawValue)
+                    options.focusTransitionStyleOverride = FocusTransitionStyle.fromStoredValue(rawValue)
+                }
+            case "--focus-transition-duration":
+                if let rawValue = nextValue(after: &index, in: arguments), let parsed = Double(rawValue), parsed.isFinite {
+                    options.focusTransitionDurationOverride = FocusBounds.clampedTransitionDuration(parsed)
                 }
             default:
                 if argument.hasPrefix("--defaults-suite=") {
@@ -360,9 +371,14 @@ public struct LaunchOptions: Equatable, Sendable {
                     if let parsed = parseBool(raw) {
                         options.pauseFocusOnFullscreenOverride = parsed
                     }
-                } else if argument.hasPrefix("--focus-feather=") {
-                    let raw = String(argument.dropFirst("--focus-feather=".count))
-                    options.focusEdgeFeatherOverride = FocusEdgeFeather.fromStoredValue(raw)
+                } else if argument.hasPrefix("--focus-transition-style=") {
+                    let raw = String(argument.dropFirst("--focus-transition-style=".count))
+                    options.focusTransitionStyleOverride = FocusTransitionStyle.fromStoredValue(raw)
+                } else if argument.hasPrefix("--focus-transition-duration=") {
+                    let raw = String(argument.dropFirst("--focus-transition-duration=".count))
+                    if let parsed = Double(raw), parsed.isFinite {
+                        options.focusTransitionDurationOverride = FocusBounds.clampedTransitionDuration(parsed)
+                    }
                 }
             }
             index += 1

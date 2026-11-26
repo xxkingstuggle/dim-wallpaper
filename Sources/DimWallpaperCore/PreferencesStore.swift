@@ -18,8 +18,9 @@ public enum PreferenceKey {
     public static let focusDimDock = "focusDimDock"
     public static let focusMultiDisplayPolicy = "focusMultiDisplayPolicy"
     public static let focusPauseOnFullscreen = "focusPauseOnFullscreen"
-    public static let focusEdgeFeather = "focusEdgeFeather"
     public static let focusTransitionSpeed = "focusTransitionSpeed"
+    public static let focusTransitionStyle = "focusTransitionStyle"
+    public static let focusTransitionDuration = "focusTransitionDuration"
     public static let focusExcludedBundleIDs = "focusExcludedBundleIDs"
     public static let focusHotKeyEnabled = "focusHotKeyEnabled"
     public static let focusHotKeyKeyCode = "focusHotKeyKeyCode"
@@ -42,8 +43,9 @@ public struct DimmingSnapshot: Equatable, Codable, Sendable {
     public var dimDock: Bool
     public var focusMultiDisplayPolicy: FocusMultiDisplayPolicy
     public var pauseFocusOnFullscreen: Bool
-    public var focusEdgeFeather: FocusEdgeFeather
     public var focusTransitionSpeed: FocusTransitionSpeed
+    public var focusTransitionStyle: FocusTransitionStyle
+    public var focusTransitionDuration: Double
     public var focusExcludedBundleIDs: Set<String>
     public var focusHotKeyEnabled: Bool
     public var focusHotKeyBinding: HotKeyBinding
@@ -64,8 +66,9 @@ public struct DimmingSnapshot: Equatable, Codable, Sendable {
         dimDock: Bool = false,
         focusMultiDisplayPolicy: FocusMultiDisplayPolicy = .perDisplayFront,
         pauseFocusOnFullscreen: Bool = true,
-        focusEdgeFeather: FocusEdgeFeather = .soft,
         focusTransitionSpeed: FocusTransitionSpeed = .softBreath,
+        focusTransitionStyle: FocusTransitionStyle = .fluidEase,
+        focusTransitionDuration: Double = FocusBounds.defaultTransitionDuration,
         focusExcludedBundleIDs: Set<String> = [],
         focusHotKeyEnabled: Bool = true,
         focusHotKeyBinding: HotKeyBinding = .defaultFocusToggle
@@ -85,8 +88,9 @@ public struct DimmingSnapshot: Equatable, Codable, Sendable {
         self.dimDock = dimDock
         self.focusMultiDisplayPolicy = focusMultiDisplayPolicy
         self.pauseFocusOnFullscreen = pauseFocusOnFullscreen
-        self.focusEdgeFeather = focusEdgeFeather
         self.focusTransitionSpeed = focusTransitionSpeed
+        self.focusTransitionStyle = focusTransitionStyle
+        self.focusTransitionDuration = FocusBounds.clampedTransitionDuration(focusTransitionDuration)
         self.focusExcludedBundleIDs = focusExcludedBundleIDs
         self.focusHotKeyEnabled = focusHotKeyEnabled
         self.focusHotKeyBinding = focusHotKeyBinding.isValid ? focusHotKeyBinding : .defaultFocusToggle
@@ -109,8 +113,11 @@ public struct DimmingSnapshot: Equatable, Codable, Sendable {
         let decodedDimDock = try container.decodeIfPresent(Bool.self, forKey: .dimDock) ?? false
         let decodedPolicy = try container.decodeIfPresent(FocusMultiDisplayPolicy.self, forKey: .focusMultiDisplayPolicy) ?? .perDisplayFront
         let decodedPauseOnFullscreen = try container.decodeIfPresent(Bool.self, forKey: .pauseFocusOnFullscreen) ?? true
-        let decodedEdgeFeather = try container.decodeIfPresent(FocusEdgeFeather.self, forKey: .focusEdgeFeather) ?? .soft
         let decodedSpeed = try container.decodeIfPresent(FocusTransitionSpeed.self, forKey: .focusTransitionSpeed) ?? .softBreath
+        let decodedTransitionStyle = try container.decodeIfPresent(FocusTransitionStyle.self, forKey: .focusTransitionStyle)
+            ?? FocusTransitionStyle.migratedStyle(fromLegacySpeed: decodedSpeed)
+        let decodedTransitionDuration = try container.decodeIfPresent(Double.self, forKey: .focusTransitionDuration)
+            ?? FocusTransitionStyle.migratedDuration(fromLegacySpeed: decodedSpeed)
         let decodedExcludedApps = try container.decodeIfPresent(Set<String>.self, forKey: .focusExcludedBundleIDs) ?? []
         let decodedFocusHotKeyEnabled = try container.decodeIfPresent(Bool.self, forKey: .focusHotKeyEnabled) ?? true
         let decodedFocusHotKeyBinding = try container.decodeIfPresent(HotKeyBinding.self, forKey: .focusHotKeyBinding) ?? .defaultFocusToggle
@@ -131,8 +138,9 @@ public struct DimmingSnapshot: Equatable, Codable, Sendable {
             dimDock: decodedDimDock,
             focusMultiDisplayPolicy: decodedPolicy,
             pauseFocusOnFullscreen: decodedPauseOnFullscreen,
-            focusEdgeFeather: decodedEdgeFeather,
             focusTransitionSpeed: decodedSpeed,
+            focusTransitionStyle: decodedTransitionStyle,
+            focusTransitionDuration: decodedTransitionDuration,
             focusExcludedBundleIDs: decodedExcludedApps,
             focusHotKeyEnabled: decodedFocusHotKeyEnabled,
             focusHotKeyBinding: decodedFocusHotKeyBinding
@@ -180,7 +188,6 @@ public final class PreferencesStore {
             PreferenceKey.focusDimDock: false,
             PreferenceKey.focusMultiDisplayPolicy: FocusMultiDisplayPolicy.perDisplayFront.rawValue,
             PreferenceKey.focusPauseOnFullscreen: true,
-            PreferenceKey.focusEdgeFeather: FocusEdgeFeather.soft.rawValue,
             PreferenceKey.focusTransitionSpeed: FocusTransitionSpeed.softBreath.rawValue,
             PreferenceKey.focusExcludedBundleIDs: [String](),
             PreferenceKey.focusHotKeyEnabled: true,
@@ -228,12 +235,22 @@ public final class PreferencesStore {
             defaults.set(focusMultiDisplayPolicy.rawValue, forKey: PreferenceKey.focusMultiDisplayPolicy)
         }
         let pauseFocusOnFullscreen = defaults.bool(forKey: PreferenceKey.focusPauseOnFullscreen)
-        let rawEdgeFeather = defaults.string(forKey: PreferenceKey.focusEdgeFeather)
-        let focusEdgeFeather = FocusEdgeFeather.fromStoredValue(rawEdgeFeather)
         let rawSpeed = defaults.string(forKey: PreferenceKey.focusTransitionSpeed)
         let focusTransitionSpeed = FocusTransitionSpeed.fromStoredValue(rawSpeed)
         if let rawSpeed, rawSpeed != focusTransitionSpeed.rawValue {
             defaults.set(focusTransitionSpeed.rawValue, forKey: PreferenceKey.focusTransitionSpeed)
+        }
+        let rawTransitionStyle = defaults.string(forKey: PreferenceKey.focusTransitionStyle)
+        let focusTransitionStyle: FocusTransitionStyle = if let rawTransitionStyle {
+            FocusTransitionStyle.fromStoredValue(rawTransitionStyle)
+        } else {
+            FocusTransitionStyle.migratedStyle(fromLegacySpeed: focusTransitionSpeed)
+        }
+        let focusTransitionDuration: Double
+        if let rawDurationObj = defaults.object(forKey: PreferenceKey.focusTransitionDuration) as? NSNumber {
+            focusTransitionDuration = FocusBounds.clampedTransitionDuration(rawDurationObj.doubleValue)
+        } else {
+            focusTransitionDuration = FocusTransitionStyle.migratedDuration(fromLegacySpeed: focusTransitionSpeed)
         }
 
         let rawExcludedBundles = defaults.stringArray(forKey: PreferenceKey.focusExcludedBundleIDs) ?? []
@@ -266,8 +283,9 @@ public final class PreferencesStore {
             dimDock: dimDock,
             focusMultiDisplayPolicy: focusMultiDisplayPolicy,
             pauseFocusOnFullscreen: pauseFocusOnFullscreen,
-            focusEdgeFeather: focusEdgeFeather,
             focusTransitionSpeed: focusTransitionSpeed,
+            focusTransitionStyle: focusTransitionStyle,
+            focusTransitionDuration: focusTransitionDuration,
             focusExcludedBundleIDs: focusExcludedBundleIDs,
             focusHotKeyEnabled: focusHotKeyEnabled,
             focusHotKeyBinding: focusCandidateBinding
@@ -300,8 +318,9 @@ public final class PreferencesStore {
         defaults.set(snapshot.dimDock, forKey: PreferenceKey.focusDimDock)
         defaults.set(snapshot.focusMultiDisplayPolicy.rawValue, forKey: PreferenceKey.focusMultiDisplayPolicy)
         defaults.set(snapshot.pauseFocusOnFullscreen, forKey: PreferenceKey.focusPauseOnFullscreen)
-        defaults.set(snapshot.focusEdgeFeather.rawValue, forKey: PreferenceKey.focusEdgeFeather)
         defaults.set(snapshot.focusTransitionSpeed.rawValue, forKey: PreferenceKey.focusTransitionSpeed)
+        defaults.set(snapshot.focusTransitionStyle.rawValue, forKey: PreferenceKey.focusTransitionStyle)
+        defaults.set(FocusBounds.clampedTransitionDuration(snapshot.focusTransitionDuration), forKey: PreferenceKey.focusTransitionDuration)
         defaults.set(cleanedBundles, forKey: PreferenceKey.focusExcludedBundleIDs)
         defaults.set(snapshot.focusHotKeyEnabled, forKey: PreferenceKey.focusHotKeyEnabled)
         defaults.set(Int(validFocusBinding.keyCode), forKey: PreferenceKey.focusHotKeyKeyCode)

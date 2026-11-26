@@ -29,6 +29,17 @@ private enum ControlCenterTab: String, CaseIterable, Identifiable {
     }
 }
 
+private struct ScrollContentHeightPreferenceKey: SwiftUI.PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        let candidate = nextValue()
+        if candidate.isFinite && candidate > 0 {
+            value = candidate
+        }
+    }
+}
+
 struct ControlCenterView: View {
     @ObservedObject var controller: DimWallpaperController
     let version: String
@@ -37,57 +48,99 @@ struct ControlCenterView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorScheme) private var colorScheme
     @State private var selectedTab: ControlCenterTab = .wallpaper
+    @State private var measuredContentHeight: CGFloat = 390
+    @State private var screenVisibleHeight: CGFloat = NSScreen.main?.visibleFrame.height ?? 860
+    @State private var durationBeforeDrag: Double?
+
+    private var maxScrollHeight: CGFloat {
+        min(460, max(300, screenVisibleHeight - 220))
+    }
+
+    private var resolvedScrollHeight: CGFloat {
+        min(max(measuredContentHeight, 240), maxScrollHeight)
+    }
 
     var body: some View {
-        VStack(spacing: 10) {
-            headerSection
-            quickModeCapsules
-            DesktopPreviewCard(
-                isDarkSystem: controller.state.isDarkAppearance,
-                wallpaperTint: controller.state.snapshot.tint,
-                wallpaperAlpha: controller.state.effectivePreviewAlpha,
-                wallpaperEnabled: controller.state.snapshot.enabled,
-                focusTint: controller.state.resolvedFocusTint,
-                focusAlpha: controller.isFocusPausedByExcludedApp ? 0 : controller.state.effectiveFocusPreviewAlpha,
-                focusEnabled: controller.state.snapshot.focusEnabled,
-                focusPausedByExclusion: controller.isFocusPausedByExcludedApp,
-                dimMenuBar: controller.state.snapshot.dimMenuBar,
-                dimDock: controller.state.snapshot.dimDock,
-                focusScope: controller.state.snapshot.focusScope,
-                focusEdgeFeather: controller.state.snapshot.focusEdgeFeather,
-                reduceTransparency: reduceTransparency
-            )
-            tabSelector
+        VStack(spacing: 0) {
+            VStack(spacing: 9) {
+                headerSection
+                quickModeCapsules
+                tabSelector
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 13)
+            .padding(.bottom, 9)
 
-            Group {
-                switch selectedTab {
-                case .wallpaper:
-                    VStack(spacing: 9) {
+            Divider()
+                .opacity(reduceTransparency ? 0.9 : 0.45)
+
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(spacing: 9) {
+                    DesktopPreviewCard(
+                        isDarkSystem: controller.state.isDarkAppearance,
+                        wallpaperTint: controller.state.snapshot.tint,
+                        wallpaperAlpha: controller.state.effectivePreviewAlpha,
+                        wallpaperEnabled: controller.state.snapshot.enabled,
+                        focusTint: controller.state.resolvedFocusTint,
+                        focusAlpha: controller.isFocusPausedByExcludedApp ? 0 : controller.state.effectiveFocusPreviewAlpha,
+                        focusEnabled: controller.state.snapshot.focusEnabled,
+                        focusPausedByExclusion: controller.isFocusPausedByExcludedApp,
+                        dimMenuBar: controller.state.snapshot.dimMenuBar,
+                        dimDock: controller.state.snapshot.dimDock,
+                        focusScope: controller.state.snapshot.focusScope,
+                        reduceTransparency: reduceTransparency
+                    )
+
+                    switch selectedTab {
+                    case .wallpaper:
                         dimmingControlCard
                         appearanceAndDisplaysCard
-                    }
-                case .focus:
-                    VStack(spacing: 9) {
+                    case .focus:
                         focusControlCard
                         focusSystemBarsCard
                         focusBehaviorCard
                         focusTargetCard
-                    }
-                case .general:
-                    VStack(spacing: 9) {
+                    case .general:
                         hotKeyCard
                         generalInfoCard
                         aboutAppCard
                     }
                 }
+                .id(selectedTab)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(
+                    GeometryReader { geometry in
+                        Color.clear.preference(
+                            key: ScrollContentHeightPreferenceKey.self,
+                            value: geometry.size.height
+                        )
+                    }
+                )
+            }
+            .frame(height: resolvedScrollHeight)
+            .onPreferenceChange(ScrollContentHeightPreferenceKey.self) { nextHeight in
+                guard nextHeight.isFinite, nextHeight > 1 else { return }
+                if abs(measuredContentHeight - nextHeight) > 0.5 {
+                    measuredContentHeight = nextHeight
+                }
             }
 
+            Divider()
+                .opacity(reduceTransparency ? 0.9 : 0.45)
+
             footerBar
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
         }
-        .padding(14)
-        .frame(width: 344)
+        .frame(width: 372)
         .background(panelBackground)
         .onAppear {
+            if let currentHeight = (NSApp.keyWindow?.screen ?? NSScreen.main)?.visibleFrame.height,
+               currentHeight.isFinite,
+               currentHeight > 200 {
+                screenVisibleHeight = currentHeight
+            }
             if controller.state.snapshot.focusEnabled && !controller.state.snapshot.enabled {
                 selectedTab = .focus
             }
@@ -119,6 +172,12 @@ struct ControlCenterView: View {
         return colorScheme == .dark
             ? Color.white.opacity(0.11)
             : Color.black.opacity(0.08)
+    }
+
+    private var focusAccentColor: Color {
+        colorScheme == .dark
+            ? Color(red: 0.58, green: 0.60, blue: 1.0)
+            : Color(red: 0.27, green: 0.24, blue: 0.78)
     }
 
     private var statusIndicatorColor: Color {
@@ -661,7 +720,7 @@ struct ControlCenterView: View {
                 if controller.state.focusSystemBarPreset == nil {
                     Text("自定义")
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.indigo)
+                        .foregroundStyle(focusAccentColor)
                 }
             }
 
@@ -679,22 +738,22 @@ struct ControlCenterView: View {
                                 RoundedRectangle(cornerRadius: 7.5, style: .continuous)
                                     .fill(
                                         isSelected
-                                            ? Color.indigo.opacity(reduceTransparency ? 0.22 : 0.16)
+                                            ? focusAccentColor.opacity(reduceTransparency ? 0.22 : 0.16)
                                             : (colorScheme == .dark ? Color.white.opacity(0.04) : Color.black.opacity(0.03))
                                     )
                             )
                             .overlay(
                                 RoundedRectangle(cornerRadius: 7.5, style: .continuous)
-                                    .stroke(isSelected ? Color.indigo.opacity(0.65) : cardBorderColor, lineWidth: isSelected ? 1 : 0.5)
+                                    .stroke(isSelected ? focusAccentColor.opacity(0.65) : cardBorderColor, lineWidth: isSelected ? 1 : 0.5)
                             )
                     }
                     .buttonStyle(.plain)
                 }
             }
 
-            HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
                 Toggle(
-                    "压暗顶部菜单栏",
+                    "连同菜单栏文字图标一并压暗",
                     isOn: Binding(
                         get: { controller.state.snapshot.dimMenuBar },
                         set: { controller.setDimMenuBar($0) }
@@ -703,10 +762,8 @@ struct ControlCenterView: View {
                 .toggleStyle(.checkbox)
                 .font(.system(size: 11))
 
-                Spacer(minLength: 4)
-
                 Toggle(
-                    "压暗程序坞 Dock",
+                    "连同程序坞 Dock 图标一并压暗",
                     isOn: Binding(
                         get: { controller.state.snapshot.dimDock },
                         set: { controller.setDimDock($0) }
@@ -716,45 +773,14 @@ struct ControlCenterView: View {
                 .font(.system(size: 11))
             }
 
-            Divider()
-                .opacity(reduceTransparency ? 0.9 : 0.45)
-
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 6) {
-                    Text("顶边柔化")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(controller.state.snapshot.dimMenuBar ? "压暗菜单栏时自动无缝" : controller.state.snapshot.focusEdgeFeather.title)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(controller.state.snapshot.dimMenuBar ? Color.secondary : Color.indigo)
-                }
-
-                Picker(
-                    "顶边柔化",
-                    selection: Binding(
-                        get: { controller.state.snapshot.focusEdgeFeather },
-                        set: { controller.setFocusEdgeFeather($0) }
-                    )
-                ) {
-                    ForEach(FocusEdgeFeather.allCases) { feather in
-                        Text(feather.shortTitle).tag(feather)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .controlSize(.small)
-                .opacity(controller.state.snapshot.dimMenuBar ? 0.58 : 1.0)
-
-                Text(
-                    controller.state.snapshot.dimMenuBar
-                        ? "关闭「压暗顶部菜单栏」后生效，用于消除亮色菜单栏底沿的硬黑线"
-                        : controller.state.snapshot.focusEdgeFeather.detailDescription
-                )
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            }
+            Text(
+                controller.state.snapshot.dimMenuBar
+                    ? "当前已勾选连同菜单栏文字图标一并压暗；取消勾选即可保留菜单栏亮色图标（仅压暗背景）"
+                    : "保留菜单栏亮色图标（仅压暗背景），与 Dock 一样和桌面无缝一体变暗、文字图标保持原亮"
+            )
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
         }
         .padding(11)
         .background(cardSurface)
@@ -836,47 +862,122 @@ struct ControlCenterView: View {
             Divider()
                 .opacity(reduceTransparency ? 0.9 : 0.45)
 
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
+            VStack(alignment: .leading, spacing: 7) {
+                let activeTransitionStyle = controller.state.snapshot.focusTransitionStyle
+                let activeDuration = controller.state.snapshot.focusTransitionDuration
+
+                HStack(spacing: 6) {
                     Text("过渡动画")
                         .font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text(controller.state.snapshot.focusTransitionSpeed.subtitle)
-                        .font(.system(size: 10, weight: .medium).monospacedDigit())
-                        .foregroundStyle(.indigo)
+                    Text(String(format: "%.2fs", activeDuration))
+                        .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(focusAccentColor)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(
+                            Capsule()
+                                .fill(focusAccentColor.opacity(reduceTransparency ? 0.22 : 0.14))
+                        )
+
+                    Button {
+                        controller.previewFocusTransition()
+                    } label: {
+                        HStack(spacing: 3.5) {
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 8.5, weight: .bold))
+                            Text("预览动效")
+                                .font(.system(size: 10, weight: .semibold))
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(focusAccentColor)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule()
+                                .fill(focusAccentColor.opacity(reduceTransparency ? 0.20 : 0.12))
+                        )
+                        .overlay(
+                            Capsule()
+                                .stroke(focusAccentColor.opacity(0.55), lineWidth: 0.7)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .help("在真实桌面遮罩上演练一次完整的退场与进场过渡动画")
                 }
 
-                HStack(spacing: 6) {
-                    ForEach(FocusTransitionSpeed.allCases) { speed in
-                        let isSelected = controller.state.snapshot.focusTransitionSpeed == speed
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Text("过渡时长")
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("0.08s – 2.00s")
+                            .font(.system(size: 9.5).monospacedDigit())
+                            .foregroundStyle(.tertiary)
+                    }
+                    Slider(
+                        value: Binding(
+                            get: { controller.state.snapshot.focusTransitionDuration },
+                            set: { controller.setFocusTransitionDuration(($0 * 50.0).rounded() / 50.0) }
+                        ),
+                        in: FocusBounds.minimumTransitionDuration...FocusBounds.maximumTransitionDuration,
+                        onEditingChanged: { editing in
+                            if editing {
+                                durationBeforeDrag = controller.state.snapshot.focusTransitionDuration
+                            } else {
+                                if let before = durationBeforeDrag,
+                                   abs(before - controller.state.snapshot.focusTransitionDuration) > 0.005 {
+                                    controller.previewFocusTransition()
+                                }
+                                durationBeforeDrag = nil
+                            }
+                        }
+                    )
+                    .controlSize(.small)
+                    .tint(focusAccentColor)
+                }
+
+                let transitionColumns = [
+                    GridItem(.flexible(), spacing: 6),
+                    GridItem(.flexible(), spacing: 6),
+                    GridItem(.flexible(), spacing: 6),
+                ]
+                LazyVGrid(columns: transitionColumns, spacing: 6) {
+                    ForEach(FocusTransitionStyle.allCases) { style in
+                        let isSelected = activeTransitionStyle == style
                         Button {
-                            controller.setFocusTransitionSpeed(speed)
+                            controller.setFocusTransitionStyle(style, previewIfActive: true)
                         } label: {
-                            VStack(spacing: 2) {
-                                Text(speed.title)
-                                    .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
+                            VStack(spacing: 3) {
+                                Image(systemName: style.symbolName)
+                                    .font(.system(size: 11.5, weight: .semibold))
+                                    .foregroundStyle(isSelected ? focusAccentColor : Color.secondary)
+                                Text(style.title)
+                                    .font(.system(size: 10.5, weight: isSelected ? .semibold : .medium))
                                     .foregroundStyle(isSelected ? .primary : .secondary)
-                                Text(speed.subtitle)
-                                    .font(.system(size: 9.2, weight: .regular).monospacedDigit())
-                                    .foregroundStyle(isSelected ? Color.indigo : Color.secondary)
+                                    .lineLimit(1)
+                                Text(style.shortTag)
+                                    .font(.system(size: 9, weight: .regular))
+                                    .foregroundStyle(isSelected ? focusAccentColor : Color.secondary)
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.85)
                             }
                             .frame(maxWidth: .infinity)
-                            .padding(.vertical, 6)
+                            .padding(.vertical, 6.5)
                             .padding(.horizontal, 4)
                             .background(
                                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                                     .fill(
                                         isSelected
-                                            ? Color.indigo.opacity(reduceTransparency ? 0.22 : 0.16)
+                                            ? focusAccentColor.opacity(reduceTransparency ? 0.22 : 0.15)
                                             : (colorScheme == .dark ? Color.white.opacity(0.04) : Color.black.opacity(0.03))
                                     )
                             )
                             .overlay(
                                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .stroke(isSelected ? Color.indigo.opacity(0.65) : cardBorderColor, lineWidth: isSelected ? 1 : 0.5)
+                                    .stroke(isSelected ? focusAccentColor.opacity(0.72) : cardBorderColor, lineWidth: isSelected ? 1 : 0.5)
                             )
                         }
                         .buttonStyle(.plain)
@@ -1120,18 +1221,20 @@ struct ControlCenterView: View {
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 Button {
                     controller.toggleLoginItem()
                 } label: {
-                    HStack(spacing: 5) {
+                    HStack(spacing: 4.5) {
                         Circle()
                             .fill(loginDotColor)
-                            .frame(width: 6, height: 6)
-                        Text(controller.loginController.statusLabel)
-                            .font(.system(size: 11, weight: .medium))
+                            .frame(width: 5.5, height: 5.5)
+                        Text(controller.loginController.compactStatusLabel)
+                            .font(.system(size: 10.5, weight: .medium))
+                            .lineLimit(1)
                     }
-                    .padding(.horizontal, 8)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .padding(.horizontal, 7.5)
                     .padding(.vertical, 4)
                     .background(
                         Capsule()
@@ -1140,8 +1243,9 @@ struct ControlCenterView: View {
                     .overlay(Capsule().stroke(cardBorderColor, lineWidth: 0.5))
                 }
                 .buttonStyle(.plain)
+                .help(controller.loginController.statusLabel)
 
-                Spacer()
+                Spacer(minLength: 4)
 
                 Button {
                     if let url = URL(string: "https://myzjx.com/software/dim-wallpaper/") {
@@ -1152,20 +1256,27 @@ struct ControlCenterView: View {
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
                 .buttonStyle(.plain)
                 .help("访问 DimWallpaper 官网主页 (myzjx.com)")
 
+                Spacer(minLength: 4)
+
                 Text("v\(version)")
-                    .font(.system(size: 10.5).monospacedDigit())
+                    .font(.system(size: 10).monospacedDigit())
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
 
                 Button("退出") {
                     onQuit()
                 }
                 .buttonStyle(.plain)
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: 10.5, weight: .medium))
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .background(
@@ -1209,7 +1320,6 @@ private struct DesktopPreviewCard: View {
     let dimMenuBar: Bool
     let dimDock: Bool
     let focusScope: FocusScope
-    let focusEdgeFeather: FocusEdgeFeather
     let reduceTransparency: Bool
 
     private var isWallpaperDimming: Bool {
@@ -1256,48 +1366,7 @@ private struct DesktopPreviewCard: View {
                 drawBackgroundDesktopLayer(in: &graphics, size: size)
             }
 
-            GeometryReader { proxy in
-                let previewMenuBarHeight: CGFloat = 14
-                let focusBodyHeight = max(1, proxy.size.height - previewMenuBarHeight)
-                let previewFeatherPoints: CGFloat = {
-                    guard !dimMenuBar else { return 0 }
-                    switch focusEdgeFeather {
-                    case .soft: return 28
-                    case .subtle: return 14
-                    case .sharp: return 0
-                    }
-                }()
-                let baseFocusColor = Color(red: focusRGB.red, green: focusRGB.green, blue: focusRGB.blue)
-                let gradientStops: [Gradient.Stop] = {
-                    guard previewFeatherPoints > 0 else {
-                        let opacity = isFocusDimming ? focusAlpha : 0
-                        return [
-                            Gradient.Stop(color: baseFocusColor.opacity(opacity), location: 0),
-                            Gradient.Stop(color: baseFocusColor.opacity(opacity), location: 1),
-                        ]
-                    }
-                    let span = min(Double(previewFeatherPoints), Double(focusBodyHeight) * 0.35) / Double(focusBodyHeight)
-                    var stops = FocusEdgeFeatherCurve.sampleFractions.map { fraction in
-                        let opacity = isFocusDimming ? focusAlpha * FocusEdgeFeatherCurve.cosineWeight(fraction) : 0
-                        return Gradient.Stop(color: baseFocusColor.opacity(opacity), location: fraction * span)
-                    }
-                    if span < 1.0 {
-                        stops.append(Gradient.Stop(color: baseFocusColor.opacity(isFocusDimming ? focusAlpha : 0), location: 1.0))
-                    }
-                    return stops
-                }()
-
-                LinearGradient(
-                    gradient: Gradient(stops: gradientStops),
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .padding(.top, previewMenuBarHeight)
-                .animation(.easeInOut(duration: 0.20), value: focusAlpha)
-                .animation(.easeInOut(duration: 0.20), value: focusTint)
-                .animation(.easeInOut(duration: 0.20), value: focusEdgeFeather)
-                .animation(.easeInOut(duration: 0.20), value: dimMenuBar)
-            }
+            previewFocusOverlay(focusRGB: focusRGB)
 
             Canvas { graphics, size in
                 drawForegroundAndSystemChrome(in: &graphics, size: size)
@@ -1322,10 +1391,10 @@ private struct DesktopPreviewCard: View {
                     Spacer()
                 }
                 .padding(.horizontal, 8)
-                .padding(.bottom, 22)
+                .padding(.bottom, 18)
             }
         }
-        .aspectRatio(16.0 / 10.0, contentMode: .fit)
+        .frame(height: 120)
         .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 11, style: .continuous)
@@ -1451,23 +1520,46 @@ private struct DesktopPreviewCard: View {
         drawMockAppWindow(in: &graphics, rect: backWindowRect, isActive: false)
     }
 
+    @ViewBuilder
+    private func previewFocusOverlay(focusRGB: TintComponents) -> some View {
+        if isFocusDimming {
+            Color(red: focusRGB.red, green: focusRGB.green, blue: focusRGB.blue)
+                .opacity(focusAlpha)
+                .animation(.easeInOut(duration: 0.20), value: focusAlpha)
+                .animation(.easeInOut(duration: 0.20), value: focusTint)
+        }
+    }
+
     private func drawForegroundAndSystemChrome(in graphics: inout GraphicsContext, size: CGSize) {
         let focusRGB = focusTint.components
         let focusOverlayColor = Color(red: focusRGB.red, green: focusRGB.green, blue: focusRGB.blue)
 
-        let frontWindowRect = CGRect(x: size.width * 0.24, y: 31, width: size.width * 0.54, height: size.height * 0.46)
+        let frontWindowRect = CGRect(x: size.width * 0.24, y: 26, width: size.width * 0.54, height: size.height * 0.50)
         drawMockAppWindow(in: &graphics, rect: frontWindowRect, isActive: true)
 
         let menuBarRect = CGRect(x: 0, y: 0, width: size.width, height: 14)
         graphics.fill(
             Path(menuBarRect),
-            with: .color(isDarkSystem ? Color.black.opacity(0.42) : Color.white.opacity(0.68))
+            with: .color(
+                isFocusDimming
+                    ? Color.white.opacity(isDarkSystem ? 0.04 : 0.08)
+                    : (isDarkSystem ? Color.black.opacity(0.24) : Color.white.opacity(0.32))
+            )
         )
+        let menuInkColor: Color = (isFocusDimming || isDarkSystem)
+            ? Color.white.opacity(0.92)
+            : Color.black.opacity(0.68)
+        let appleDot = CGRect(x: 9, y: 4.5, width: 5, height: 5)
+        graphics.fill(Path(ellipseIn: appleDot), with: .color(menuInkColor))
+        let menuStripA = CGRect(x: 18, y: 5.5, width: 16, height: 3)
+        let menuStripB = CGRect(x: 38, y: 5.5, width: 12, height: 3)
+        graphics.fill(Path(roundedRect: menuStripA, cornerRadius: 1.5), with: .color(menuInkColor.opacity(0.88)))
+        graphics.fill(Path(roundedRect: menuStripB, cornerRadius: 1.5), with: .color(menuInkColor.opacity(0.65)))
         for index in 0..<3 {
             let barDot = CGRect(x: size.width - 14 - CGFloat(index) * 9, y: 4.5, width: 5, height: 5)
             graphics.fill(
                 Path(ellipseIn: barDot),
-                with: .color(isDarkSystem ? Color.white.opacity(0.85) : Color.black.opacity(0.65))
+                with: .color(menuInkColor)
             )
         }
         if isFocusDimming && dimMenuBar {
@@ -1482,7 +1574,11 @@ private struct DesktopPreviewCard: View {
         let dockPath = Path(roundedRect: dockRect, cornerRadius: 6)
         graphics.fill(
             dockPath,
-            with: .color(isDarkSystem ? Color.white.opacity(0.22) : Color.white.opacity(0.76))
+            with: .color(
+                isFocusDimming
+                    ? Color.white.opacity(0.22)
+                    : (isDarkSystem ? Color.white.opacity(0.22) : Color.white.opacity(0.76))
+            )
         )
         let dockDotColors: [Color] = [.blue, .green, .orange, .pink, .purple, .teal]
         for (index, appColor) in dockDotColors.enumerated() {

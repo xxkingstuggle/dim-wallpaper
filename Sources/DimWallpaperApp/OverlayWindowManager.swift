@@ -32,6 +32,8 @@ final class DimWallpaperController: ObservableObject {
     private var focusPollTimer: Timer?
     private var focusMouseUpMonitor: Any?
     private var pendingClickChecks: [DispatchWorkItem] = []
+    private var previewToken: UInt64 = 0
+    private var pendingPreviewWork: DispatchWorkItem?
     private var isScreenAsleep = false
     private var appearanceObserver: NSKeyValueObservation?
     private var notificationTokens: [NSObjectProtocol] = []
@@ -114,6 +116,8 @@ final class DimWallpaperController: ObservableObject {
     }
 
     func shutdown() {
+        pendingPreviewWork?.cancel()
+        pendingPreviewWork = nil
         pendingScreenSync?.cancel()
         pendingScreenSync = nil
         pendingAppearanceSync?.cancel()
@@ -157,10 +161,16 @@ final class DimWallpaperController: ObservableObject {
 
     // MARK: - User Actions
 
+    private var wallpaperToggleDuration: TimeInterval {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            ? 0.0
+            : min(FocusBounds.clampedTransitionDuration(state.snapshot.focusTransitionDuration), 0.8)
+    }
+
     func setEnabled(_ value: Bool) {
         guard state.snapshot.enabled != value else { return }
         state.setEnabled(value)
-        applyOverlays(animated: true, durationOverride: 0.07)
+        applyOverlays(animated: true, durationOverride: wallpaperToggleDuration)
         scheduleDebouncedPersistence()
         onStatusAppearanceChanged?()
     }
@@ -180,7 +190,7 @@ final class DimWallpaperController: ObservableObject {
 
     func applyPreset(_ preset: DimmingPreset) {
         state.applyPreset(preset)
-        applyOverlays(animated: true, durationOverride: 0.07)
+        applyOverlays(animated: true, durationOverride: wallpaperToggleDuration)
         scheduleDebouncedPersistence()
         onStatusAppearanceChanged?()
     }
@@ -188,7 +198,7 @@ final class DimWallpaperController: ObservableObject {
     func setDarkOnly(_ value: Bool) {
         guard state.snapshot.darkOnly != value else { return }
         state.setDarkOnly(value)
-        applyOverlays(animated: true, durationOverride: 0.07)
+        applyOverlays(animated: true, durationOverride: wallpaperToggleDuration)
         scheduleDebouncedPersistence()
         onStatusAppearanceChanged?()
     }
@@ -196,7 +206,7 @@ final class DimWallpaperController: ObservableObject {
     func setTint(_ value: DimmingTint) {
         guard state.snapshot.tint != value else { return }
         state.setTint(value)
-        applyOverlays(animated: true, durationOverride: 0.07)
+        applyOverlays(animated: true, durationOverride: wallpaperToggleDuration)
         if state.snapshot.focusTint == .followWallpaper {
             refreshFocusOverlays(style: .transition, forceUpdate: true)
         }
@@ -208,7 +218,7 @@ final class DimWallpaperController: ObservableObject {
         let shouldExclude = !included
         guard state.isDisplayExcluded(displayID) != shouldExclude else { return }
         state.setDisplayExcluded(displayID, excluded: shouldExclude)
-        applyOverlays(animated: true, durationOverride: 0.07)
+        applyOverlays(animated: true, durationOverride: wallpaperToggleDuration)
         refreshFocusOverlays(style: .transition, forceUpdate: true)
         scheduleDebouncedPersistence()
         onStatusAppearanceChanged?()
@@ -316,19 +326,115 @@ final class DimWallpaperController: ObservableObject {
         onStatusAppearanceChanged?()
     }
 
-    func setFocusEdgeFeather(_ value: FocusEdgeFeather) {
-        guard state.snapshot.focusEdgeFeather != value else { return }
-        state.setFocusEdgeFeather(value)
-        refreshFocusOverlays(style: .transition, forceUpdate: true)
-        scheduleDebouncedPersistence()
-        onStatusAppearanceChanged?()
-    }
-
     func setFocusTransitionSpeed(_ value: FocusTransitionSpeed) {
         guard state.snapshot.focusTransitionSpeed != value else { return }
         state.setFocusTransitionSpeed(value)
         scheduleDebouncedPersistence()
         onStatusAppearanceChanged?()
+    }
+
+    func setFocusTransitionStyle(_ value: FocusTransitionStyle, previewIfActive: Bool = false) {
+        let changed = state.snapshot.focusTransitionStyle != value
+        if changed {
+            state.setFocusTransitionStyle(value)
+            scheduleDebouncedPersistence()
+            onStatusAppearanceChanged?()
+        }
+        if previewIfActive {
+            previewFocusTransition()
+        }
+    }
+
+    func setFocusTransitionDuration(_ value: Double) {
+        let clamped = FocusBounds.clampedTransitionDuration(value)
+        guard abs(state.snapshot.focusTransitionDuration - clamped) > 0.001 else { return }
+        state.setFocusTransitionDuration(clamped)
+        scheduleDebouncedPersistence()
+        onStatusAppearanceChanged?()
+    }
+
+    func previewFocusTransition() {
+        guard isStarted, !isScreenAsleep else { return }
+        pendingPreviewWork?.cancel()
+        pendingPreviewWork = nil
+        previewToken &+= 1
+        let capturedPreview = previewToken
+
+        let transitionStyle = state.snapshot.focusTransitionStyle
+        let duration = FocusBounds.clampedTransitionDuration(state.snapshot.focusTransitionDuration)
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let hasVisibleOverlay = focusGroups.values.contains { $0.mainSlot.targetVisible || $0.mainSlot.window.isVisible }
+
+        if state.isFocusGloballyActive && hasVisibleOverlay {
+            let exitDuration = min(duration, 0.72)
+            for (displayID, group) in focusGroups {
+                lastFocusFingerprints.removeValue(forKey: displayID)
+                fadeOutAndHideFocusGroup(
+                    group,
+                    style: .transition,
+                    transitionStyle: transitionStyle,
+                    baseDuration: exitDuration,
+                    reduceMotion: reduceMotion
+                )
+            }
+            let resolvedExit = transitionStyle.resolvedFadeOutDuration(baseDuration: exitDuration, reduceMotion: reduceMotion)
+            let delay = max(0.10, resolvedExit + 0.08)
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.previewToken == capturedPreview else { return }
+                self.pendingPreviewWork = nil
+                self.refreshFocusOverlays(style: .transition, forceUpdate: true)
+            }
+            pendingPreviewWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+            return
+        }
+
+        guard let screen = NSScreen.main ?? NSScreen.screens.first,
+              let displayID = Self.displayID(for: screen) else {
+            return
+        }
+        let dimMenuBar = state.snapshot.dimMenuBar
+        let dimDock = state.snapshot.dimDock
+        let partition = FocusScreenPartition.partition(
+            screenFrame: screen.frame,
+            visibleFrame: screen.visibleFrame,
+            dimMenuBar: dimMenuBar,
+            dimDock: dimDock,
+            foregroundWindowFrames: [],
+            safeAreaTopInset: screen.safeAreaInsets.top
+        )
+        let previewPlan = FocusDisplayPlan(
+            displayID: displayID,
+            placement: .orderFrontNormal,
+            partition: partition,
+            targetAlpha: FocusBounds.clampedIntensity(state.snapshot.focusIntensity),
+            foregroundWindowFrames: []
+        )
+        let color = overlayColor(for: state.resolvedFocusTint)
+        lastFocusFingerprints.removeValue(forKey: displayID)
+        applyFocusPlan(
+            previewPlan,
+            on: screen,
+            color: color,
+            style: .transition,
+            transitionStyle: transitionStyle,
+            baseDuration: duration,
+            reduceMotion: reduceMotion
+        )
+
+        let resolvedIn = transitionStyle.resolvedFadeInDuration(baseDuration: duration, reduceMotion: reduceMotion)
+        let holdDelay = max(0.28, resolvedIn + 0.24)
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.previewToken == capturedPreview else { return }
+            self.pendingPreviewWork = nil
+            if self.state.isFocusGloballyActive {
+                self.refreshFocusOverlays(style: .transition, forceUpdate: true)
+            } else {
+                self.hidePooledFocusOverlays(style: .transition)
+            }
+        }
+        pendingPreviewWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + holdDelay, execute: work)
     }
 
     func setFocusExcludedApp(_ bundleID: String, excluded: Bool) {
@@ -721,9 +827,8 @@ final class DimWallpaperController: ObservableObject {
         let screensByID = Self.screensByDisplayID()
         let resolvedTint = state.resolvedFocusTint
         let color = overlayColor(for: resolvedTint)
-        let edgeFeather = state.snapshot.focusEdgeFeather
-        let dimMenuBar = state.snapshot.dimMenuBar
-        let speed = state.snapshot.focusTransitionSpeed
+        let transitionStyle = state.snapshot.focusTransitionStyle
+        let transitionDuration = state.snapshot.focusTransitionDuration
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
 
         for plan in plans {
@@ -733,9 +838,7 @@ final class DimWallpaperController: ObservableObject {
                 menuBarStripRect: plan.partition.menuBarStripRect,
                 dockStripRects: plan.partition.dockStripRects,
                 targetAlpha: plan.targetAlpha,
-                tint: resolvedTint,
-                edgeFeather: edgeFeather,
-                dimMenuBar: dimMenuBar
+                tint: resolvedTint
             )
 
             if !forceUpdate, lastFocusFingerprints[plan.displayID] == fingerprint {
@@ -748,10 +851,9 @@ final class DimWallpaperController: ObservableObject {
                 plan,
                 on: screen,
                 color: color,
-                edgeFeather: edgeFeather,
-                dimMenuBar: dimMenuBar,
                 style: style,
-                speed: speed,
+                transitionStyle: transitionStyle,
+                baseDuration: transitionDuration,
                 reduceMotion: reduceMotion
             )
         }
@@ -761,33 +863,31 @@ final class DimWallpaperController: ObservableObject {
         _ plan: FocusDisplayPlan,
         on screen: NSScreen,
         color: NSColor,
-        edgeFeather: FocusEdgeFeather,
-        dimMenuBar: Bool,
         style: FocusRefreshStyle,
-        speed: FocusTransitionSpeed,
+        transitionStyle: FocusTransitionStyle,
+        baseDuration: Double,
         reduceMotion: Bool
     ) {
         let displayID = plan.displayID
 
         guard plan.shouldShow else {
             guard let group = focusGroups[displayID] else { return }
-            fadeOutAndHideFocusGroup(group, style: style, speed: speed, reduceMotion: reduceMotion)
+            fadeOutAndHideFocusGroup(
+                group,
+                style: style,
+                transitionStyle: transitionStyle,
+                baseDuration: baseDuration,
+                reduceMotion: reduceMotion
+            )
             return
         }
 
-        let featherStops = FocusEdgeFeatherCurve.gradientStops(
-            feather: edgeFeather,
-            dimMenuBar: dimMenuBar,
-            mainRectHeight: plan.partition.mainRect.height
-        )
-
         let group = focusGroups[displayID] ?? {
-            let (mainWindow, backdropView) = makeFeatheredFocusMainWindow(
+            let (mainWindow, backdropView) = makeFocusMainWindow(
                 for: screen,
                 frame: plan.partition.mainRect,
                 level: focusNormalLevel,
-                color: color,
-                stops: featherStops
+                color: color
             )
             let created = FocusDisplayOverlayGroup(
                 mainSlot: FocusOverlaySlot(window: mainWindow),
@@ -803,16 +903,36 @@ final class DimWallpaperController: ObservableObject {
         mainWindow.level = focusNormalLevel
         mainWindow.backgroundColor = .clear
 
+        let normalizedAnchor = normalizedInkAnchor(for: plan)
+        group.lastNormalizedAnchor = normalizedAnchor
+
         if plan.partition.mainRect.width > FocusBounds.minimumStripThickness,
            plan.partition.mainRect.height > FocusBounds.minimumStripThickness {
             if !mainWindow.frame.equalTo(plan.partition.mainRect) {
                 mainWindow.setFrame(plan.partition.mainRect, display: false)
             }
             group.mainBackdropView.frame = NSRect(origin: .zero, size: plan.partition.mainRect.size)
-            group.mainBackdropView.update(color: color, stops: featherStops)
+            group.mainBackdropView.update(color: color)
             group.mainBackdropView.layoutSubtreeIfNeeded()
 
-            prepareSlotBeforeOrdering(mainSlot, targetAlpha: targetAlpha, style: style, speed: speed, reduceMotion: reduceMotion)
+            let willRunSpatialEnter = shouldRunSpatialEnter(
+                slot: mainSlot,
+                style: style,
+                transitionStyle: transitionStyle,
+                baseDuration: baseDuration,
+                reduceMotion: reduceMotion
+            )
+            prepareSlotBeforeOrdering(
+                mainSlot,
+                targetAlpha: targetAlpha,
+                style: style,
+                transitionStyle: transitionStyle,
+                baseDuration: baseDuration,
+                reduceMotion: reduceMotion,
+                backdropView: group.mainBackdropView,
+                willRunSpatialEnter: willRunSpatialEnter,
+                anchorPoint: normalizedAnchor
+            )
             switch plan.placement {
             case .orderBelow(let windowNumber):
                 mainWindow.order(.below, relativeTo: windowNumber)
@@ -821,9 +941,26 @@ final class DimWallpaperController: ObservableObject {
             case .hidden:
                 mainWindow.orderOut(nil)
             }
-            animateSlotToVisible(mainSlot, targetAlpha: targetAlpha, style: style, speed: speed, reduceMotion: reduceMotion)
+            animateSlotToVisible(
+                mainSlot,
+                targetAlpha: targetAlpha,
+                style: style,
+                transitionStyle: transitionStyle,
+                baseDuration: baseDuration,
+                reduceMotion: reduceMotion,
+                backdropView: group.mainBackdropView,
+                anchorPoint: normalizedAnchor
+            )
         } else {
-            fadeOutSlot(mainSlot, style: style, speed: speed, reduceMotion: reduceMotion)
+            fadeOutSlot(
+                mainSlot,
+                style: style,
+                transitionStyle: transitionStyle,
+                baseDuration: baseDuration,
+                reduceMotion: reduceMotion,
+                backdropView: group.mainBackdropView,
+                anchorPoint: normalizedAnchor
+            )
         }
 
         if let menuBarRect = plan.partition.menuBarStripRect {
@@ -844,11 +981,31 @@ final class DimWallpaperController: ObservableObject {
             if !menuWindow.frame.equalTo(menuBarRect) {
                 menuWindow.setFrame(menuBarRect, display: false)
             }
-            prepareSlotBeforeOrdering(menuSlot, targetAlpha: targetAlpha, style: style, speed: speed, reduceMotion: reduceMotion)
+            prepareSlotBeforeOrdering(
+                menuSlot,
+                targetAlpha: targetAlpha,
+                style: style,
+                transitionStyle: transitionStyle,
+                baseDuration: baseDuration,
+                reduceMotion: reduceMotion
+            )
             menuWindow.orderFrontRegardless()
-            animateSlotToVisible(menuSlot, targetAlpha: targetAlpha, style: style, speed: speed, reduceMotion: reduceMotion)
+            animateSlotToVisible(
+                menuSlot,
+                targetAlpha: targetAlpha,
+                style: style,
+                transitionStyle: transitionStyle,
+                baseDuration: baseDuration,
+                reduceMotion: reduceMotion
+            )
         } else if let existingMenuSlot = group.menuBarSlot {
-            fadeOutSlot(existingMenuSlot, style: style, speed: speed, reduceMotion: reduceMotion)
+            fadeOutSlot(
+                existingMenuSlot,
+                style: style,
+                transitionStyle: transitionStyle,
+                baseDuration: baseDuration,
+                reduceMotion: reduceMotion
+            )
         }
 
         let desiredDockRects = plan.partition.dockStripRects
@@ -865,7 +1022,13 @@ final class DimWallpaperController: ObservableObject {
         }
         if desiredDockRects.count < group.dockSlots.count {
             for index in desiredDockRects.count..<group.dockSlots.count {
-                fadeOutSlot(group.dockSlots[index], style: style, speed: speed, reduceMotion: reduceMotion)
+                fadeOutSlot(
+                    group.dockSlots[index],
+                    style: style,
+                    transitionStyle: transitionStyle,
+                    baseDuration: baseDuration,
+                    reduceMotion: reduceMotion
+                )
             }
         }
         for (index, dockRect) in desiredDockRects.enumerated() {
@@ -885,10 +1048,37 @@ final class DimWallpaperController: ObservableObject {
             if !dockWindow.frame.equalTo(dockRect) {
                 dockWindow.setFrame(dockRect, display: false)
             }
-            prepareSlotBeforeOrdering(dockSlot, targetAlpha: targetAlpha, style: style, speed: speed, reduceMotion: reduceMotion)
+            prepareSlotBeforeOrdering(
+                dockSlot,
+                targetAlpha: targetAlpha,
+                style: style,
+                transitionStyle: transitionStyle,
+                baseDuration: baseDuration,
+                reduceMotion: reduceMotion
+            )
             dockWindow.orderFrontRegardless()
-            animateSlotToVisible(dockSlot, targetAlpha: targetAlpha, style: style, speed: speed, reduceMotion: reduceMotion)
+            animateSlotToVisible(
+                dockSlot,
+                targetAlpha: targetAlpha,
+                style: style,
+                transitionStyle: transitionStyle,
+                baseDuration: baseDuration,
+                reduceMotion: reduceMotion
+            )
         }
+    }
+
+    private func normalizedInkAnchor(for plan: FocusDisplayPlan) -> CGPoint {
+        let rect = plan.partition.mainRect
+        guard rect.width > 1, rect.height > 1, let firstWindow = plan.foregroundWindowFrames.first else {
+            return CGPoint(x: 0.5, y: 0.5)
+        }
+        let rawX = (firstWindow.midX - rect.minX) / rect.width
+        let rawY = (firstWindow.midY - rect.minY) / rect.height
+        return CGPoint(
+            x: min(max(rawX, 0.16), 0.84),
+            y: min(max(rawY, 0.16), 0.84)
+        )
     }
 
     private func hidePooledFocusOverlays(style: FocusRefreshStyle) {
@@ -896,34 +1086,92 @@ final class DimWallpaperController: ObservableObject {
             lastFocusFingerprints.removeAll()
             return
         }
-        let speed = state.snapshot.focusTransitionSpeed
+        let transitionStyle = state.snapshot.focusTransitionStyle
+        let baseDuration = state.snapshot.focusTransitionDuration
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         for (displayID, group) in focusGroups {
             lastFocusFingerprints.removeValue(forKey: displayID)
-            fadeOutAndHideFocusGroup(group, style: style, speed: speed, reduceMotion: reduceMotion)
+            fadeOutAndHideFocusGroup(
+                group,
+                style: style,
+                transitionStyle: transitionStyle,
+                baseDuration: baseDuration,
+                reduceMotion: reduceMotion
+            )
         }
     }
 
     private func fadeOutAndHideFocusGroup(
         _ group: FocusDisplayOverlayGroup,
         style: FocusRefreshStyle,
-        speed: FocusTransitionSpeed,
+        transitionStyle: FocusTransitionStyle,
+        baseDuration: Double,
         reduceMotion: Bool
     ) {
-        for slot in group.allSlots {
-            fadeOutSlot(slot, style: style, speed: speed, reduceMotion: reduceMotion)
+        fadeOutSlot(
+            group.mainSlot,
+            style: style,
+            transitionStyle: transitionStyle,
+            baseDuration: baseDuration,
+            reduceMotion: reduceMotion,
+            backdropView: group.mainBackdropView,
+            anchorPoint: group.lastNormalizedAnchor
+        )
+        if let menuSlot = group.menuBarSlot {
+            fadeOutSlot(
+                menuSlot,
+                style: style,
+                transitionStyle: transitionStyle,
+                baseDuration: baseDuration,
+                reduceMotion: reduceMotion
+            )
         }
+        for dockSlot in group.dockSlots {
+            fadeOutSlot(
+                dockSlot,
+                style: style,
+                transitionStyle: transitionStyle,
+                baseDuration: baseDuration,
+                reduceMotion: reduceMotion
+            )
+        }
+    }
+
+    private func shouldRunSpatialEnter(
+        slot: FocusOverlaySlot,
+        style: FocusRefreshStyle,
+        transitionStyle: FocusTransitionStyle,
+        baseDuration: Double,
+        reduceMotion: Bool
+    ) -> Bool {
+        guard style == .transition,
+              transitionStyle.isSpatialMask,
+              !reduceMotion,
+              transitionStyle.resolvedFadeInDuration(baseDuration: baseDuration, reduceMotion: false) > 0.001 else {
+            return false
+        }
+        return !slot.targetVisible || !slot.window.isVisible
     }
 
     private func prepareSlotBeforeOrdering(
         _ slot: FocusOverlaySlot,
         targetAlpha: CGFloat,
         style: FocusRefreshStyle,
-        speed: FocusTransitionSpeed,
-        reduceMotion: Bool
+        transitionStyle: FocusTransitionStyle,
+        baseDuration: Double,
+        reduceMotion: Bool,
+        backdropView: FocusBackdropView? = nil,
+        willRunSpatialEnter: Bool = false,
+        anchorPoint: CGPoint = CGPoint(x: 0.5, y: 0.5)
     ) {
         guard !slot.window.isVisible else { return }
-        let shouldAnimate = style == .transition && speed.resolvedFadeInDuration(reduceMotion: reduceMotion) > 0.001
+        let shouldAnimate = style == .transition
+            && transitionStyle.resolvedFadeInDuration(baseDuration: baseDuration, reduceMotion: reduceMotion) > 0.001
+        if willRunSpatialEnter, let backdropView {
+            backdropView.prepareSpatialTransitionEnter(style: transitionStyle, anchorNormalizedPoint: anchorPoint)
+        } else {
+            backdropView?.clearTransitionMask()
+        }
         slot.window.alphaValue = shouldAnimate ? 0 : targetAlpha
     }
 
@@ -931,14 +1179,18 @@ final class DimWallpaperController: ObservableObject {
         _ slot: FocusOverlaySlot,
         targetAlpha: CGFloat,
         style: FocusRefreshStyle,
-        speed: FocusTransitionSpeed,
-        reduceMotion: Bool
+        transitionStyle: FocusTransitionStyle,
+        baseDuration: Double,
+        reduceMotion: Bool,
+        backdropView: FocusBackdropView? = nil,
+        anchorPoint: CGPoint = CGPoint(x: 0.5, y: 0.5)
     ) {
         if style == .interactiveScrub || style == .immediate {
             slot.token &+= 1
             slot.targetVisible = true
             slot.targetAlpha = targetAlpha
             slot.isAnimating = false
+            backdropView?.clearTransitionMask()
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0
                 slot.window.animator().alphaValue = targetAlpha
@@ -954,11 +1206,12 @@ final class DimWallpaperController: ObservableObject {
             return
         }
 
+        let wasHidden = !slot.targetVisible || !slot.window.isVisible
         let duration: TimeInterval
         if !slot.targetVisible || targetAlpha >= slot.targetAlpha {
-            duration = speed.resolvedFadeInDuration(reduceMotion: reduceMotion)
+            duration = transitionStyle.resolvedFadeInDuration(baseDuration: baseDuration, reduceMotion: reduceMotion)
         } else {
-            duration = speed.resolvedFadeOutDuration(reduceMotion: reduceMotion)
+            duration = transitionStyle.resolvedFadeOutDuration(baseDuration: baseDuration, reduceMotion: reduceMotion)
         }
 
         slot.token &+= 1
@@ -968,6 +1221,7 @@ final class DimWallpaperController: ObservableObject {
 
         guard duration > 0.001 else {
             slot.isAnimating = false
+            backdropView?.clearTransitionMask()
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0
                 slot.window.animator().alphaValue = targetAlpha
@@ -977,7 +1231,34 @@ final class DimWallpaperController: ObservableObject {
         }
 
         slot.isAnimating = true
-        let timingFunction = mediaTimingFunction(for: speed.timingCurve)
+        let timingFunction = mediaTimingFunction(for: transitionStyle.timingCurve)
+        let useSpatialMask = wasHidden && transitionStyle.isSpatialMask && !reduceMotion && backdropView != nil
+
+        if useSpatialMask, let backdropView {
+            backdropView.animateSpatialTransition(
+                style: transitionStyle,
+                entering: true,
+                duration: duration,
+                timingFunction: timingFunction,
+                anchorNormalizedPoint: anchorPoint
+            )
+            let alphaLiftDuration = max(0.06, min(duration * 0.42, 0.28))
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = alphaLiftDuration
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                context.allowsImplicitAnimation = true
+                slot.window.animator().alphaValue = targetAlpha
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.02) { [weak slot, weak backdropView] in
+                guard let slot, slot.token == capturedToken else { return }
+                slot.isAnimating = false
+                slot.window.alphaValue = targetAlpha
+                backdropView?.clearTransitionMask()
+            }
+            return
+        }
+
+        backdropView?.clearTransitionMask()
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = duration
             context.timingFunction = timingFunction
@@ -994,8 +1275,11 @@ final class DimWallpaperController: ObservableObject {
     private func fadeOutSlot(
         _ slot: FocusOverlaySlot,
         style: FocusRefreshStyle,
-        speed: FocusTransitionSpeed,
-        reduceMotion: Bool
+        transitionStyle: FocusTransitionStyle,
+        baseDuration: Double,
+        reduceMotion: Bool,
+        backdropView: FocusBackdropView? = nil,
+        anchorPoint: CGPoint = CGPoint(x: 0.5, y: 0.5)
     ) {
         let isHiddenNow = !slot.window.isVisible && slot.window.alphaValue <= CGFloat(FocusBounds.visibilityEpsilon)
         if isHiddenNow {
@@ -1003,6 +1287,7 @@ final class DimWallpaperController: ObservableObject {
             slot.targetVisible = false
             slot.targetAlpha = 0
             slot.isAnimating = false
+            backdropView?.clearTransitionMask()
             slot.window.alphaValue = 0
             slot.window.orderOut(nil)
             return
@@ -1013,7 +1298,7 @@ final class DimWallpaperController: ObservableObject {
         }
 
         let duration = (style == .transition)
-            ? speed.resolvedFadeOutDuration(reduceMotion: reduceMotion)
+            ? transitionStyle.resolvedFadeOutDuration(baseDuration: baseDuration, reduceMotion: reduceMotion)
             : 0.0
 
         slot.token &+= 1
@@ -1023,6 +1308,7 @@ final class DimWallpaperController: ObservableObject {
 
         guard duration > 0.001 else {
             slot.isAnimating = false
+            backdropView?.clearTransitionMask()
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0
                 slot.window.animator().alphaValue = 0
@@ -1033,7 +1319,34 @@ final class DimWallpaperController: ObservableObject {
         }
 
         slot.isAnimating = true
-        let timingFunction = mediaTimingFunction(for: speed.timingCurve)
+        let timingFunction = mediaTimingFunction(for: transitionStyle.timingCurve)
+        let useSpatialMask = transitionStyle.isSpatialMask && !reduceMotion && backdropView != nil
+
+        if useSpatialMask, let backdropView {
+            backdropView.animateSpatialTransition(
+                style: transitionStyle,
+                entering: false,
+                duration: duration,
+                timingFunction: timingFunction,
+                anchorNormalizedPoint: anchorPoint
+            )
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = duration
+                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.60, 0.0, 1.0, 0.65)
+                context.allowsImplicitAnimation = true
+                slot.window.animator().alphaValue = 0
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.02) { [weak slot, weak backdropView] in
+                guard let slot, slot.token == capturedToken else { return }
+                slot.isAnimating = false
+                backdropView?.clearTransitionMask()
+                slot.window.alphaValue = 0
+                slot.window.orderOut(nil)
+            }
+            return
+        }
+
+        backdropView?.clearTransitionMask()
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = duration
             context.timingFunction = timingFunction
@@ -1083,16 +1396,15 @@ final class DimWallpaperController: ObservableObject {
         lastFocusFingerprints.removeAll()
     }
 
-    private func makeFeatheredFocusMainWindow(
+    private func makeFocusMainWindow(
         for screen: NSScreen,
         frame: CGRect,
         level: NSWindow.Level,
-        color: NSColor,
-        stops: [FocusEdgeFeatherStop]
+        color: NSColor
     ) -> (NSWindow, FocusBackdropView) {
         let window = makeBaseFocusWindow(for: screen, frame: frame, level: level, backgroundColor: .clear)
         let backdropView = FocusBackdropView(frame: NSRect(origin: .zero, size: frame.size))
-        backdropView.update(color: color, stops: stops)
+        backdropView.update(color: color)
         window.contentView = backdropView
         backdropView.layoutSubtreeIfNeeded()
         return (window, backdropView)
@@ -1394,10 +1706,35 @@ private enum FocusRefreshStyle {
 }
 
 @MainActor
+private final class FocusMaskTextureCache {
+    static let shared = FocusMaskTextureCache()
+
+    private var cachedWaveTideMask: CGImage?
+    private var cachedInkBloomMask: CGImage?
+
+    func waveTideMask() -> CGImage? {
+        if let cachedWaveTideMask {
+            return cachedWaveTideMask
+        }
+        let baked = FocusSpatialTransitionMasks.makeWaveTideMaskImage()
+        cachedWaveTideMask = baked
+        return baked
+    }
+
+    func inkBloomMask() -> CGImage? {
+        if let cachedInkBloomMask {
+            return cachedInkBloomMask
+        }
+        let baked = FocusSpatialTransitionMasks.makeInkBloomMaskImage()
+        cachedInkBloomMask = baked
+        return baked
+    }
+}
+
+@MainActor
 private final class FocusBackdropView: NSView {
-    private let gradientLayer = CAGradientLayer()
+    private let colorLayer = CALayer()
     private var lastColor: NSColor?
-    private var lastStops: [FocusEdgeFeatherStop] = []
 
     override var isFlipped: Bool { false }
 
@@ -1418,14 +1755,13 @@ private final class FocusBackdropView: NSView {
         CATransaction.setDisableActions(true)
         layer?.isGeometryFlipped = false
         layer?.backgroundColor = NSColor.clear.cgColor
-        gradientLayer.isGeometryFlipped = false
-        gradientLayer.type = .axial
-        gradientLayer.startPoint = CGPoint(x: 0.5, y: 1.0)
-        gradientLayer.endPoint = CGPoint(x: 0.5, y: 0.0)
-        gradientLayer.frame = bounds
-        gradientLayer.needsDisplayOnBoundsChange = true
-        if gradientLayer.superlayer == nil {
-            layer?.addSublayer(gradientLayer)
+
+        colorLayer.isGeometryFlipped = false
+        colorLayer.frame = bounds
+        colorLayer.needsDisplayOnBoundsChange = true
+
+        if colorLayer.superlayer == nil {
+            layer?.addSublayer(colorLayer)
         }
         CATransaction.commit()
     }
@@ -1434,9 +1770,9 @@ private final class FocusBackdropView: NSView {
         super.layout()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        gradientLayer.frame = bounds
+        colorLayer.frame = bounds
         if let scale = window?.backingScaleFactor, scale > 0 {
-            gradientLayer.contentsScale = scale
+            colorLayer.contentsScale = scale
         }
         CATransaction.commit()
     }
@@ -1446,39 +1782,174 @@ private final class FocusBackdropView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         if let scale = window?.backingScaleFactor, scale > 0 {
-            gradientLayer.contentsScale = scale
+            colorLayer.contentsScale = scale
         }
         CATransaction.commit()
     }
 
-    func update(color: NSColor, stops: [FocusEdgeFeatherStop]) {
-        guard lastColor != color || lastStops != stops else { return }
+    func update(color: NSColor) {
+        guard lastColor != color else { return }
         lastColor = color
-        lastStops = stops
-
-        let resolvedRGB = color.usingColorSpace(.sRGB) ?? color
-        let red = resolvedRGB.redComponent
-        let green = resolvedRGB.greenComponent
-        let blue = resolvedRGB.blueComponent
-
-        let cgColors: [CGColor] = stops.map { stop in
-            NSColor(
-                srgbRed: red,
-                green: green,
-                blue: blue,
-                alpha: CGFloat(stop.opacityWeight)
-            ).cgColor
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        colorLayer.frame = bounds
+        colorLayer.backgroundColor = color.cgColor
+        if let scale = window?.backingScaleFactor, scale > 0 {
+            colorLayer.contentsScale = scale
         }
-        let locations: [NSNumber] = stops.map { NSNumber(value: $0.location) }
+        CATransaction.commit()
+    }
+
+    func clearTransitionMask() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer?.mask?.removeAllAnimations()
+        layer?.mask = nil
+        CATransaction.commit()
+    }
+
+    func prepareSpatialTransitionEnter(style: FocusTransitionStyle, anchorNormalizedPoint: CGPoint) {
+        guard let rootLayer = layer, bounds.width > 1, bounds.height > 1 else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let maskLayer = makeSpatialMaskLayer(
+            for: style,
+            entering: true,
+            anchorNormalizedPoint: anchorNormalizedPoint
+        )
+        rootLayer.mask = maskLayer
+        CATransaction.commit()
+    }
+
+    func animateSpatialTransition(
+        style: FocusTransitionStyle,
+        entering: Bool,
+        duration: TimeInterval,
+        timingFunction: CAMediaTimingFunction,
+        anchorNormalizedPoint: CGPoint
+    ) {
+        guard let rootLayer = layer, bounds.width > 1, bounds.height > 1 else { return }
+        let width = bounds.width
+        let height = bounds.height
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        gradientLayer.startPoint = CGPoint(x: 0.5, y: 1.0)
-        gradientLayer.endPoint = CGPoint(x: 0.5, y: 0.0)
-        gradientLayer.colors = cgColors
-        gradientLayer.locations = locations
-        gradientLayer.frame = bounds
+        let maskLayer = makeSpatialMaskLayer(
+            for: style,
+            entering: entering,
+            anchorNormalizedPoint: anchorNormalizedPoint
+        )
+        rootLayer.mask = maskLayer
         CATransaction.commit()
+
+        guard let maskLayer else { return }
+
+        switch style {
+        case .waveTide:
+            let startPos = entering ? CGPoint(x: width, y: -0.45 * height) : CGPoint(x: 0, y: 1.45 * height)
+            let endPos = entering ? CGPoint(x: 0, y: 1.45 * height) : CGPoint(x: width, y: -0.45 * height)
+            let anim = CABasicAnimation(keyPath: "position")
+            anim.fromValue = NSValue(point: startPos)
+            anim.toValue = NSValue(point: endPos)
+            anim.duration = duration
+            anim.timingFunction = timingFunction
+            anim.fillMode = .forwards
+            anim.isRemovedOnCompletion = false
+            maskLayer.position = endPos
+            maskLayer.add(anim, forKey: "dimWallpaper.waveTide")
+
+        case .inkBloom:
+            let startScale: CGFloat = entering ? 0.10 : 3.60
+            let endScale: CGFloat = entering ? 3.60 : 0.10
+            let anim = CABasicAnimation(keyPath: "transform.scale")
+            anim.fromValue = startScale
+            anim.toValue = endScale
+            anim.duration = duration
+            anim.timingFunction = timingFunction
+            anim.fillMode = .forwards
+            anim.isRemovedOnCompletion = false
+            maskLayer.transform = CATransform3DMakeScale(endScale, endScale, 1.0)
+            maskLayer.add(anim, forKey: "dimWallpaper.inkBloom")
+
+        case .velvetCurtain:
+            let startPos = entering ? CGPoint(x: width * 0.5, y: 1.45 * height) : CGPoint(x: width * 0.5, y: -0.45 * height)
+            let endPos = entering ? CGPoint(x: width * 0.5, y: -0.45 * height) : CGPoint(x: width * 0.5, y: 1.45 * height)
+            let anim = CABasicAnimation(keyPath: "position")
+            anim.fromValue = NSValue(point: startPos)
+            anim.toValue = NSValue(point: endPos)
+            anim.duration = duration
+            anim.timingFunction = timingFunction
+            anim.fillMode = .forwards
+            anim.isRemovedOnCompletion = false
+            maskLayer.position = endPos
+            maskLayer.add(anim, forKey: "dimWallpaper.velvetCurtain")
+
+        case .fluidEase, .linear, .organicBreath:
+            clearTransitionMask()
+        }
+    }
+
+    private func makeSpatialMaskLayer(
+        for style: FocusTransitionStyle,
+        entering: Bool,
+        anchorNormalizedPoint: CGPoint
+    ) -> CALayer? {
+        let width = bounds.width
+        let height = bounds.height
+
+        switch style {
+        case .waveTide:
+            guard let waveImage = FocusMaskTextureCache.shared.waveTideMask() else { return nil }
+            let waveLayer = CALayer()
+            waveLayer.isGeometryFlipped = false
+            waveLayer.contents = waveImage
+            waveLayer.contentsGravity = .resize
+            waveLayer.magnificationFilter = .linear
+            waveLayer.minificationFilter = .linear
+            waveLayer.bounds = CGRect(x: 0, y: 0, width: width * 2.0, height: height * 2.9)
+            waveLayer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            waveLayer.position = entering ? CGPoint(x: width, y: -0.45 * height) : CGPoint(x: 0, y: 1.45 * height)
+            return waveLayer
+
+        case .inkBloom:
+            guard let inkImage = FocusMaskTextureCache.shared.inkBloomMask() else { return nil }
+            let inkLayer = CALayer()
+            inkLayer.isGeometryFlipped = false
+            inkLayer.contents = inkImage
+            inkLayer.contentsGravity = .resize
+            inkLayer.magnificationFilter = .linear
+            inkLayer.minificationFilter = .linear
+            let baseDim = max(width, height) * 1.60
+            inkLayer.bounds = CGRect(x: 0, y: 0, width: baseDim, height: baseDim)
+            inkLayer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            inkLayer.position = CGPoint(
+                x: width * anchorNormalizedPoint.x,
+                y: height * anchorNormalizedPoint.y
+            )
+            let initialScale: CGFloat = entering ? 0.10 : 3.60
+            inkLayer.transform = CATransform3DMakeScale(initialScale, initialScale, 1.0)
+            return inkLayer
+
+        case .velvetCurtain:
+            let curtain = CAGradientLayer()
+            curtain.isGeometryFlipped = false
+            curtain.type = .axial
+            curtain.startPoint = CGPoint(x: 0.5, y: 1.0)
+            curtain.endPoint = CGPoint(x: 0.5, y: 0.0)
+            let opaque = CGColor(gray: 1.0, alpha: 1.0)
+            let clear = CGColor(gray: 1.0, alpha: 0.0)
+            curtain.colors = [opaque, opaque, clear, clear]
+            curtain.locations = [0.0, 0.36, 0.64, 1.0]
+            curtain.bounds = CGRect(x: 0, y: 0, width: width, height: height * 2.9)
+            curtain.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            curtain.position = entering
+                ? CGPoint(x: width * 0.5, y: 1.45 * height)
+                : CGPoint(x: width * 0.5, y: -0.45 * height)
+            return curtain
+
+        case .fluidEase, .linear, .organicBreath:
+            return nil
+        }
     }
 }
 
@@ -1501,6 +1972,7 @@ private final class FocusDisplayOverlayGroup {
     let mainBackdropView: FocusBackdropView
     var menuBarSlot: FocusOverlaySlot?
     var dockSlots: [FocusOverlaySlot] = []
+    var lastNormalizedAnchor = CGPoint(x: 0.5, y: 0.5)
 
     init(mainSlot: FocusOverlaySlot, mainBackdropView: FocusBackdropView) {
         self.mainSlot = mainSlot
@@ -1524,6 +1996,4 @@ private struct FocusDisplayRenderFingerprint: Equatable {
     let dockStripRects: [CGRect]
     let targetAlpha: Double
     let tint: DimmingTint
-    let edgeFeather: FocusEdgeFeather
-    let dimMenuBar: Bool
 }

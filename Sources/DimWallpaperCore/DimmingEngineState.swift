@@ -247,12 +247,19 @@ public struct DimmingEngineState: Equatable, Sendable {
         snapshot.pauseFocusOnFullscreen = value
     }
 
-    public mutating func setFocusEdgeFeather(_ value: FocusEdgeFeather) {
-        snapshot.focusEdgeFeather = value
-    }
-
     public mutating func setFocusTransitionSpeed(_ value: FocusTransitionSpeed) {
         snapshot.focusTransitionSpeed = value
+        snapshot.focusTransitionStyle = FocusTransitionStyle.migratedStyle(fromLegacySpeed: value)
+        snapshot.focusTransitionDuration = FocusTransitionStyle.migratedDuration(fromLegacySpeed: value)
+    }
+
+    public mutating func setFocusTransitionStyle(_ value: FocusTransitionStyle) {
+        snapshot.focusTransitionStyle = value
+        snapshot.focusTransitionSpeed = value.legacySpeedEquivalent
+    }
+
+    public mutating func setFocusTransitionDuration(_ value: Double) {
+        snapshot.focusTransitionDuration = FocusBounds.clampedTransitionDuration(value)
     }
 
     public mutating func setFocusExcludedApp(_ bundleID: String, excluded: Bool) {
@@ -294,8 +301,9 @@ public struct DiagnosticReport: Codable, Equatable, Sendable {
     public let dimDock: Bool
     public let focusMultiDisplayPolicy: String
     public let pauseFocusOnFullscreen: Bool
-    public let focusEdgeFeather: String
     public let focusTransitionSpeed: String
+    public let focusTransitionStyle: String
+    public let focusTransitionDuration: Double
     public let focusExcludedBundleIDs: [String]
     public let focusHotKeyEnabled: Bool
     public let focusHotKey: String
@@ -328,8 +336,9 @@ public struct DiagnosticReport: Codable, Equatable, Sendable {
         self.dimDock = snapshot.dimDock
         self.focusMultiDisplayPolicy = snapshot.focusMultiDisplayPolicy.rawValue
         self.pauseFocusOnFullscreen = snapshot.pauseFocusOnFullscreen
-        self.focusEdgeFeather = snapshot.focusEdgeFeather.rawValue
         self.focusTransitionSpeed = snapshot.focusTransitionSpeed.rawValue
+        self.focusTransitionStyle = snapshot.focusTransitionStyle.rawValue
+        self.focusTransitionDuration = FocusBounds.clampedTransitionDuration(snapshot.focusTransitionDuration)
         self.focusExcludedBundleIDs = snapshot.focusExcludedBundleIDs.sorted()
         self.focusHotKeyEnabled = snapshot.focusHotKeyEnabled
         self.focusHotKey = snapshot.focusHotKeyBinding.displayLabel
@@ -338,7 +347,7 @@ public struct DiagnosticReport: Codable, Equatable, Sendable {
     }
 
     public func legacyLine() -> String {
-        "enabled=\(enabled) intensity=\(intensity) darkOnly=\(darkOnly) tint=\(tint) hotKeyEnabled=\(hotKeyEnabled) focusEnabled=\(focusEnabled) focusIntensity=\(focusIntensity) focusScope=\(focusScope) dimMenuBar=\(dimMenuBar) dimDock=\(dimDock) focusHotKeyEnabled=\(focusHotKeyEnabled) displays=\(displays.count) loginItemStatus=\(loginItemStatus) focusMultiDisplayPolicy=\(focusMultiDisplayPolicy) pauseFocusOnFullscreen=\(pauseFocusOnFullscreen) focusEdgeFeather=\(focusEdgeFeather) focusTransitionSpeed=\(focusTransitionSpeed)"
+        "enabled=\(enabled) intensity=\(intensity) darkOnly=\(darkOnly) tint=\(tint) hotKeyEnabled=\(hotKeyEnabled) focusEnabled=\(focusEnabled) focusIntensity=\(focusIntensity) focusScope=\(focusScope) dimMenuBar=\(dimMenuBar) dimDock=\(dimDock) focusHotKeyEnabled=\(focusHotKeyEnabled) displays=\(displays.count) loginItemStatus=\(loginItemStatus) focusMultiDisplayPolicy=\(focusMultiDisplayPolicy) pauseFocusOnFullscreen=\(pauseFocusOnFullscreen) focusTransitionSpeed=\(focusTransitionSpeed) focusTransitionStyle=\(focusTransitionStyle) focusTransitionDuration=\(focusTransitionDuration)"
     }
 
     public func jsonString() throws -> String {

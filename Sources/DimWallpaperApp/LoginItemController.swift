@@ -19,6 +19,15 @@ final class LoginItemController {
         }
     }
 
+    var compactStatusLabel: String {
+        switch status {
+        case .enabled: "自启 · 已开"
+        case .requiresApproval: "自启 · 需批"
+        case .notRegistered, .notFound: "开机自启"
+        @unknown default: "开机自启"
+        }
+    }
+
     var menuTitle: String {
         switch status {
         case .requiresApproval: "允许在后台运行（打开系统设置）…"

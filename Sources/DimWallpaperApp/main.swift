@@ -13,7 +13,7 @@ if launchOptions.printStatus || launchOptions.printStatusJSON {
     let store = PreferencesStore(suiteName: launchOptions.defaultsSuiteName)
     let snapshot = launchOptions.applyingOverrides(to: store.load())
     let displays = DimWallpaperController.captureOnlineDisplays()
-    let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.1.0"
+    let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.2.0"
     let report = DiagnosticReport(
         version: version,
         suiteName: store.suiteName,

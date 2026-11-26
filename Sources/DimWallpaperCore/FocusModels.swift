@@ -9,6 +9,9 @@ public enum FocusBounds {
     public static let minimumStripThickness: CGFloat = 0.5
     public static let minimumWindowDimension: CGFloat = 48.0
     public static let minimumWindowAlpha: Double = 0.01
+    public static let minimumTransitionDuration: Double = 0.08
+    public static let maximumTransitionDuration: Double = 2.00
+    public static let defaultTransitionDuration: Double = 0.55
 
     public static func clampedIntensity(_ value: Double) -> Double {
         guard value.isFinite else { return defaultIntensity }
@@ -17,6 +20,11 @@ public enum FocusBounds {
 
     public static func percentage(for intensity: Double) -> Int {
         Int((clampedIntensity(intensity) * 100.0).rounded())
+    }
+
+    public static func clampedTransitionDuration(_ value: Double) -> Double {
+        guard value.isFinite else { return defaultTransitionDuration }
+        return min(max(value, minimumTransitionDuration), maximumTransitionDuration)
     }
 }
 
@@ -157,122 +165,6 @@ public enum FocusMultiDisplayPolicy: String, CaseIterable, Identifiable, Codable
         let container = try decoder.singleValueContainer()
         let rawValue = try? container.decode(String.self)
         self = Self.fromStoredValue(rawValue)
-    }
-}
-
-public enum FocusEdgeFeather: String, CaseIterable, Identifiable, Codable, Sendable {
-    case soft
-    case subtle
-    case sharp
-
-    public var id: String { rawValue }
-
-    public var title: String {
-        switch self {
-        case .soft: "柔和晕影"
-        case .subtle: "细腻羽化"
-        case .sharp: "清晰硬边"
-        }
-    }
-
-    public var shortTitle: String {
-        switch self {
-        case .soft: "柔和 38pt"
-        case .subtle: "细腻 18pt"
-        case .sharp: "硬边 0pt"
-        }
-    }
-
-    public var menuTitle: String {
-        switch self {
-        case .soft: "柔和晕影 · 38pt"
-        case .subtle: "细腻羽化 · 18pt"
-        case .sharp: "清晰硬边 · 0pt"
-        }
-    }
-
-    public var detailDescription: String {
-        switch self {
-        case .soft: "在未压暗菜单栏下沿生成 38pt 余弦柔化晕影，彻底消除硬黑线"
-        case .subtle: "在菜单栏下沿保留 18pt 细腻渐变过渡，边界更利落"
-        case .sharp: "关闭顶边羽化，遮罩从菜单栏下沿直接满强度生效"
-        }
-    }
-
-    public var featherPoints: CGFloat {
-        switch self {
-        case .soft: 38.0
-        case .subtle: 18.0
-        case .sharp: 0.0
-        }
-    }
-
-    public static func fromStoredValue(_ rawValue: String?) -> FocusEdgeFeather {
-        guard let rawValue else { return .soft }
-        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        return FocusEdgeFeather(rawValue: trimmed) ?? .soft
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        let rawValue = try? container.decode(String.self)
-        self = Self.fromStoredValue(rawValue)
-    }
-}
-
-public struct FocusEdgeFeatherStop: Equatable, Sendable {
-    public let location: Double
-    public let opacityWeight: Double
-
-    public init(location: Double, opacityWeight: Double) {
-        self.location = location
-        self.opacityWeight = opacityWeight
-    }
-}
-
-public enum FocusEdgeFeatherCurve {
-    public static let sampleFractions: [Double] = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
-    public static let maximumSpanRatio: Double = 0.28
-
-    public static func cosineWeight(_ t: Double) -> Double {
-        let clamped = min(max(t, 0.0), 1.0)
-        return (1.0 - cos(Double.pi * clamped)) * 0.5
-    }
-
-    public static func gradientStops(
-        feather: FocusEdgeFeather,
-        dimMenuBar: Bool,
-        mainRectHeight: CGFloat
-    ) -> [FocusEdgeFeatherStop] {
-        guard !dimMenuBar,
-              feather.featherPoints > 0,
-              mainRectHeight.isFinite,
-              mainRectHeight > 0 else {
-            return [
-                FocusEdgeFeatherStop(location: 0.0, opacityWeight: 1.0),
-                FocusEdgeFeatherStop(location: 1.0, opacityWeight: 1.0),
-            ]
-        }
-
-        let height = max(1.0, Double(mainRectHeight))
-        let span = min(Double(feather.featherPoints), height * maximumSpanRatio) / height
-        guard span > 0.0001 else {
-            return [
-                FocusEdgeFeatherStop(location: 0.0, opacityWeight: 1.0),
-                FocusEdgeFeatherStop(location: 1.0, opacityWeight: 1.0),
-            ]
-        }
-
-        var stops = sampleFractions.map { fraction in
-            FocusEdgeFeatherStop(
-                location: fraction * span,
-                opacityWeight: cosineWeight(fraction)
-            )
-        }
-        if span < 1.0 {
-            stops.append(FocusEdgeFeatherStop(location: 1.0, opacityWeight: 1.0))
-        }
-        return stops
     }
 }
 
@@ -451,7 +343,11 @@ public struct FocusScreenPartition: Equatable, Sendable {
     public let menuBarStripRect: CGRect?
     public let dockStripRects: [CGRect]
 
-    public init(mainRect: CGRect, menuBarStripRect: CGRect?, dockStripRects: [CGRect]) {
+    public init(
+        mainRect: CGRect,
+        menuBarStripRect: CGRect?,
+        dockStripRects: [CGRect]
+    ) {
         self.mainRect = mainRect
         self.menuBarStripRect = menuBarStripRect
         self.dockStripRects = dockStripRects
@@ -518,21 +414,19 @@ public struct FocusScreenPartition: Equatable, Sendable {
         var remaining = screenFrame
         var menuBarStrip: CGRect?
 
-        if menuBarHeight > FocusBounds.minimumStripThickness {
+        if dimMenuBar, menuBarHeight > FocusBounds.minimumStripThickness {
             remaining = CGRect(
                 x: screenFrame.minX,
                 y: screenFrame.minY,
                 width: screenFrame.width,
                 height: max(0, menuBarBottomY - screenFrame.minY)
             )
-            if dimMenuBar {
-                menuBarStrip = CGRect(
-                    x: screenFrame.minX,
-                    y: menuBarBottomY,
-                    width: screenFrame.width,
-                    height: menuBarHeight
-                )
-            }
+            menuBarStrip = CGRect(
+                x: screenFrame.minX,
+                y: menuBarBottomY,
+                width: screenFrame.width,
+                height: menuBarHeight
+            )
         }
 
         var dockStrips: [CGRect] = []

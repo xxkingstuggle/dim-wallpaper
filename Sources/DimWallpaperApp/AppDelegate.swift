@@ -42,7 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
         }
         statusItem = item
 
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.1.0"
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.2.0"
         let rootView = ControlCenterView(
             controller: controller,
             version: version,
@@ -194,7 +194,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
         menu.addItem(focusEnableItem)
 
         let systemBarsItem = NSMenuItem(
-            title: "同时压暗菜单栏与 Dock",
+            title: "连同菜单栏与 Dock 图标一并压暗",
             action: #selector(toggleSystemBarsFromMenu),
             keyEquivalent: ""
         )
@@ -249,34 +249,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
         fullscreenExemptItem.state = controller.state.snapshot.pauseFocusOnFullscreen ? .on : .off
         menu.addItem(fullscreenExemptItem)
 
-        let edgeFeatherSubmenu = NSMenu()
-        for feather in FocusEdgeFeather.allCases {
-            let item = NSMenuItem(
-                title: feather.menuTitle,
-                action: #selector(selectFocusEdgeFeatherFromMenu(_:)),
-                keyEquivalent: ""
-            )
-            item.target = self
-            item.representedObject = feather.rawValue
-            item.state = controller.state.snapshot.focusEdgeFeather == feather ? .on : .off
-            edgeFeatherSubmenu.addItem(item)
-        }
-        let edgeFeatherMenuItem = NSMenuItem(title: "顶边柔化", action: nil, keyEquivalent: "")
-        edgeFeatherMenuItem.submenu = edgeFeatherSubmenu
-        menu.addItem(edgeFeatherMenuItem)
-
         let transitionSubmenu = NSMenu()
-        for speed in FocusTransitionSpeed.allCases {
+        for style in FocusTransitionStyle.allCases {
             let item = NSMenuItem(
-                title: speed.menuTitle,
-                action: #selector(selectFocusTransitionSpeedFromMenu(_:)),
+                title: style.menuTitle,
+                action: #selector(selectFocusTransitionStyleFromMenu(_:)),
                 keyEquivalent: ""
             )
             item.target = self
-            item.representedObject = speed.rawValue
-            item.state = controller.state.snapshot.focusTransitionSpeed == speed ? .on : .off
+            item.representedObject = style.rawValue
+            item.state = controller.state.snapshot.focusTransitionStyle == style ? .on : .off
             transitionSubmenu.addItem(item)
         }
+        transitionSubmenu.addItem(.separator())
+        let previewTransitionItem = NSMenuItem(
+            title: String(format: "预览当前动效 (%.2fs)", controller.state.snapshot.focusTransitionDuration),
+            action: #selector(previewFocusTransitionFromMenu),
+            keyEquivalent: ""
+        )
+        previewTransitionItem.target = self
+        transitionSubmenu.addItem(previewTransitionItem)
         let transitionMenuItem = NSMenuItem(title: "过渡动画", action: nil, keyEquivalent: "")
         transitionMenuItem.submenu = transitionSubmenu
         menu.addItem(transitionMenuItem)
@@ -306,7 +298,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
 
         menu.addItem(.separator())
 
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.1.0"
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.2.0"
         let versionItem = NSMenuItem(title: "DimWallpaper \(version)", action: nil, keyEquivalent: "")
         versionItem.isEnabled = false
         menu.addItem(versionItem)
@@ -364,16 +356,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
         controller.setPauseFocusOnFullscreen(!controller.state.snapshot.pauseFocusOnFullscreen)
     }
 
-    @objc private func selectFocusEdgeFeatherFromMenu(_ sender: NSMenuItem) {
+    @objc private func selectFocusTransitionStyleFromMenu(_ sender: NSMenuItem) {
         guard let rawValue = sender.representedObject as? String,
-              let feather = FocusEdgeFeather(rawValue: rawValue) else { return }
-        controller.setFocusEdgeFeather(feather)
+              let style = FocusTransitionStyle(rawValue: rawValue) else { return }
+        controller.setFocusTransitionStyle(style, previewIfActive: true)
     }
 
-    @objc private func selectFocusTransitionSpeedFromMenu(_ sender: NSMenuItem) {
-        guard let rawValue = sender.representedObject as? String,
-              let speed = FocusTransitionSpeed(rawValue: rawValue) else { return }
-        controller.setFocusTransitionSpeed(speed)
+    @objc private func previewFocusTransitionFromMenu() {
+        controller.previewFocusTransition()
     }
 
     @objc private func selectFocusPresetFromMenu(_ sender: NSMenuItem) {
