@@ -243,6 +243,10 @@ public struct DimmingEngineState: Equatable, Sendable {
         snapshot.focusMultiDisplayPolicy = value
     }
 
+    public mutating func setPauseFocusOnFullscreen(_ value: Bool) {
+        snapshot.pauseFocusOnFullscreen = value
+    }
+
     public mutating func setFocusTransitionSpeed(_ value: FocusTransitionSpeed) {
         snapshot.focusTransitionSpeed = value
     }
@@ -285,6 +289,7 @@ public struct DiagnosticReport: Codable, Equatable, Sendable {
     public let dimMenuBar: Bool
     public let dimDock: Bool
     public let focusMultiDisplayPolicy: String
+    public let pauseFocusOnFullscreen: Bool
     public let focusTransitionSpeed: String
     public let focusExcludedBundleIDs: [String]
     public let focusHotKeyEnabled: Bool
@@ -317,6 +322,7 @@ public struct DiagnosticReport: Codable, Equatable, Sendable {
         self.dimMenuBar = snapshot.dimMenuBar
         self.dimDock = snapshot.dimDock
         self.focusMultiDisplayPolicy = snapshot.focusMultiDisplayPolicy.rawValue
+        self.pauseFocusOnFullscreen = snapshot.pauseFocusOnFullscreen
         self.focusTransitionSpeed = snapshot.focusTransitionSpeed.rawValue
         self.focusExcludedBundleIDs = snapshot.focusExcludedBundleIDs.sorted()
         self.focusHotKeyEnabled = snapshot.focusHotKeyEnabled
@@ -326,7 +332,7 @@ public struct DiagnosticReport: Codable, Equatable, Sendable {
     }
 
     public func legacyLine() -> String {
-        "enabled=\(enabled) intensity=\(intensity) darkOnly=\(darkOnly) tint=\(tint) hotKeyEnabled=\(hotKeyEnabled) focusEnabled=\(focusEnabled) focusIntensity=\(focusIntensity) focusScope=\(focusScope) dimMenuBar=\(dimMenuBar) dimDock=\(dimDock) focusHotKeyEnabled=\(focusHotKeyEnabled) displays=\(displays.count) loginItemStatus=\(loginItemStatus)"
+        "enabled=\(enabled) intensity=\(intensity) darkOnly=\(darkOnly) tint=\(tint) hotKeyEnabled=\(hotKeyEnabled) focusEnabled=\(focusEnabled) focusIntensity=\(focusIntensity) focusScope=\(focusScope) dimMenuBar=\(dimMenuBar) dimDock=\(dimDock) focusHotKeyEnabled=\(focusHotKeyEnabled) displays=\(displays.count) loginItemStatus=\(loginItemStatus) focusMultiDisplayPolicy=\(focusMultiDisplayPolicy) pauseFocusOnFullscreen=\(pauseFocusOnFullscreen)"
     }
 
     public func jsonString() throws -> String {

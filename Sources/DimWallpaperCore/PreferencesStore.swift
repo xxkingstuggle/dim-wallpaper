@@ -17,6 +17,7 @@ public enum PreferenceKey {
     public static let focusDimMenuBar = "focusDimMenuBar"
     public static let focusDimDock = "focusDimDock"
     public static let focusMultiDisplayPolicy = "focusMultiDisplayPolicy"
+    public static let focusPauseOnFullscreen = "focusPauseOnFullscreen"
     public static let focusTransitionSpeed = "focusTransitionSpeed"
     public static let focusExcludedBundleIDs = "focusExcludedBundleIDs"
     public static let focusHotKeyEnabled = "focusHotKeyEnabled"
@@ -39,6 +40,7 @@ public struct DimmingSnapshot: Equatable, Codable, Sendable {
     public var dimMenuBar: Bool
     public var dimDock: Bool
     public var focusMultiDisplayPolicy: FocusMultiDisplayPolicy
+    public var pauseFocusOnFullscreen: Bool
     public var focusTransitionSpeed: FocusTransitionSpeed
     public var focusExcludedBundleIDs: Set<String>
     public var focusHotKeyEnabled: Bool
@@ -58,7 +60,8 @@ public struct DimmingSnapshot: Equatable, Codable, Sendable {
         focusScope: FocusScope = .frontApplication,
         dimMenuBar: Bool = false,
         dimDock: Bool = false,
-        focusMultiDisplayPolicy: FocusMultiDisplayPolicy = .dimInactiveScreens,
+        focusMultiDisplayPolicy: FocusMultiDisplayPolicy = .perDisplayFront,
+        pauseFocusOnFullscreen: Bool = true,
         focusTransitionSpeed: FocusTransitionSpeed = .snappy,
         focusExcludedBundleIDs: Set<String> = [],
         focusHotKeyEnabled: Bool = true,
@@ -78,6 +81,7 @@ public struct DimmingSnapshot: Equatable, Codable, Sendable {
         self.dimMenuBar = dimMenuBar
         self.dimDock = dimDock
         self.focusMultiDisplayPolicy = focusMultiDisplayPolicy
+        self.pauseFocusOnFullscreen = pauseFocusOnFullscreen
         self.focusTransitionSpeed = focusTransitionSpeed
         self.focusExcludedBundleIDs = focusExcludedBundleIDs
         self.focusHotKeyEnabled = focusHotKeyEnabled
@@ -99,7 +103,8 @@ public struct DimmingSnapshot: Equatable, Codable, Sendable {
         let decodedFocusScope = try container.decodeIfPresent(FocusScope.self, forKey: .focusScope) ?? .frontApplication
         let decodedDimMenuBar = try container.decodeIfPresent(Bool.self, forKey: .dimMenuBar) ?? false
         let decodedDimDock = try container.decodeIfPresent(Bool.self, forKey: .dimDock) ?? false
-        let decodedPolicy = try container.decodeIfPresent(FocusMultiDisplayPolicy.self, forKey: .focusMultiDisplayPolicy) ?? .dimInactiveScreens
+        let decodedPolicy = try container.decodeIfPresent(FocusMultiDisplayPolicy.self, forKey: .focusMultiDisplayPolicy) ?? .perDisplayFront
+        let decodedPauseOnFullscreen = try container.decodeIfPresent(Bool.self, forKey: .pauseFocusOnFullscreen) ?? true
         let decodedSpeed = try container.decodeIfPresent(FocusTransitionSpeed.self, forKey: .focusTransitionSpeed) ?? .snappy
         let decodedExcludedApps = try container.decodeIfPresent(Set<String>.self, forKey: .focusExcludedBundleIDs) ?? []
         let decodedFocusHotKeyEnabled = try container.decodeIfPresent(Bool.self, forKey: .focusHotKeyEnabled) ?? true
@@ -120,6 +125,7 @@ public struct DimmingSnapshot: Equatable, Codable, Sendable {
             dimMenuBar: decodedDimMenuBar,
             dimDock: decodedDimDock,
             focusMultiDisplayPolicy: decodedPolicy,
+            pauseFocusOnFullscreen: decodedPauseOnFullscreen,
             focusTransitionSpeed: decodedSpeed,
             focusExcludedBundleIDs: decodedExcludedApps,
             focusHotKeyEnabled: decodedFocusHotKeyEnabled,
@@ -166,7 +172,8 @@ public final class PreferencesStore {
             PreferenceKey.focusScope: FocusScope.frontApplication.rawValue,
             PreferenceKey.focusDimMenuBar: false,
             PreferenceKey.focusDimDock: false,
-            PreferenceKey.focusMultiDisplayPolicy: FocusMultiDisplayPolicy.dimInactiveScreens.rawValue,
+            PreferenceKey.focusMultiDisplayPolicy: FocusMultiDisplayPolicy.perDisplayFront.rawValue,
+            PreferenceKey.focusPauseOnFullscreen: true,
             PreferenceKey.focusTransitionSpeed: FocusTransitionSpeed.snappy.rawValue,
             PreferenceKey.focusExcludedBundleIDs: [String](),
             PreferenceKey.focusHotKeyEnabled: true,
@@ -208,8 +215,12 @@ public final class PreferencesStore {
         let focusScope = FocusScope(rawValue: rawFocusScope) ?? .frontApplication
         let dimMenuBar = defaults.bool(forKey: PreferenceKey.focusDimMenuBar)
         let dimDock = defaults.bool(forKey: PreferenceKey.focusDimDock)
-        let rawPolicy = defaults.string(forKey: PreferenceKey.focusMultiDisplayPolicy) ?? FocusMultiDisplayPolicy.dimInactiveScreens.rawValue
-        let focusMultiDisplayPolicy = FocusMultiDisplayPolicy(rawValue: rawPolicy) ?? .dimInactiveScreens
+        let rawPolicy = defaults.string(forKey: PreferenceKey.focusMultiDisplayPolicy)
+        let focusMultiDisplayPolicy = FocusMultiDisplayPolicy.fromStoredValue(rawPolicy)
+        if rawPolicy == "dimInactiveScreens" {
+            defaults.set(focusMultiDisplayPolicy.rawValue, forKey: PreferenceKey.focusMultiDisplayPolicy)
+        }
+        let pauseFocusOnFullscreen = defaults.bool(forKey: PreferenceKey.focusPauseOnFullscreen)
         let rawSpeed = defaults.string(forKey: PreferenceKey.focusTransitionSpeed) ?? FocusTransitionSpeed.snappy.rawValue
         let focusTransitionSpeed = FocusTransitionSpeed(rawValue: rawSpeed) ?? .snappy
 
@@ -242,6 +253,7 @@ public final class PreferencesStore {
             dimMenuBar: dimMenuBar,
             dimDock: dimDock,
             focusMultiDisplayPolicy: focusMultiDisplayPolicy,
+            pauseFocusOnFullscreen: pauseFocusOnFullscreen,
             focusTransitionSpeed: focusTransitionSpeed,
             focusExcludedBundleIDs: focusExcludedBundleIDs,
             focusHotKeyEnabled: focusHotKeyEnabled,
@@ -274,6 +286,7 @@ public final class PreferencesStore {
         defaults.set(snapshot.dimMenuBar, forKey: PreferenceKey.focusDimMenuBar)
         defaults.set(snapshot.dimDock, forKey: PreferenceKey.focusDimDock)
         defaults.set(snapshot.focusMultiDisplayPolicy.rawValue, forKey: PreferenceKey.focusMultiDisplayPolicy)
+        defaults.set(snapshot.pauseFocusOnFullscreen, forKey: PreferenceKey.focusPauseOnFullscreen)
         defaults.set(snapshot.focusTransitionSpeed.rawValue, forKey: PreferenceKey.focusTransitionSpeed)
         defaults.set(cleanedBundles, forKey: PreferenceKey.focusExcludedBundleIDs)
         defaults.set(snapshot.focusHotKeyEnabled, forKey: PreferenceKey.focusHotKeyEnabled)

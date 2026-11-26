@@ -743,11 +743,10 @@ struct ControlCenterView: View {
                 .frame(width: 174)
             }
 
-            HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 5) {
                 Text("多屏策略")
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(.secondary)
-                Spacer(minLength: 4)
                 Picker(
                     "多屏策略",
                     selection: Binding(
@@ -756,13 +755,41 @@ struct ControlCenterView: View {
                     )
                 ) {
                     ForEach(FocusMultiDisplayPolicy.allCases) { policy in
-                        Text(policy.title).tag(policy)
+                        Text(policy.shortTitle).tag(policy)
                     }
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
                 .controlSize(.small)
-                .frame(width: 174)
+
+                Text(controller.state.snapshot.focusMultiDisplayPolicy.detailDescription)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Divider()
+                .opacity(reduceTransparency ? 0.9 : 0.45)
+
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("全屏视频自动豁免")
+                        .font(.system(size: 11.5, weight: .medium))
+                    Text("原生全屏或无边框全屏播放时自动隐藏该屏遮罩")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 6)
+                Toggle(
+                    "全屏视频自动豁免",
+                    isOn: Binding(
+                        get: { controller.state.snapshot.pauseFocusOnFullscreen },
+                        set: { controller.setPauseFocusOnFullscreen($0) }
+                    )
+                )
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
             }
 
             HStack(spacing: 8) {

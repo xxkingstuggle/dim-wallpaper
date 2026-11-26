@@ -422,7 +422,7 @@ final class DimWallpaperCoreTests: XCTestCase {
             scope: .frontApplication,
             dimMenuBar: true,
             dimDock: true,
-            multiDisplayPolicy: .dimInactiveScreens
+            multiDisplayPolicy: .dimSecondaryCompletely
         )
         XCTAssertEqual(frontAppDimInactive.count, 2)
         XCTAssertEqual(frontAppDimInactive[0].placement, .orderBelow(windowNumber: 102))
@@ -460,7 +460,7 @@ final class DimWallpaperCoreTests: XCTestCase {
             scope: .frontApplication,
             dimMenuBar: true,
             dimDock: true,
-            multiDisplayPolicy: .dimInactiveScreens
+            multiDisplayPolicy: .dimSecondaryCompletely
         )
         XCTAssertTrue(disabledPlans.allSatisfy { $0.placement == .hidden && $0.targetAlpha == 0.0 })
 
@@ -474,7 +474,7 @@ final class DimWallpaperCoreTests: XCTestCase {
             scope: .frontApplication,
             dimMenuBar: true,
             dimDock: true,
-            multiDisplayPolicy: .dimInactiveScreens,
+            multiDisplayPolicy: .dimSecondaryCompletely,
             excludedDisplayIDs: [2]
         )
         XCTAssertEqual(excludedSecondaryPlans[0].placement, .orderBelow(windowNumber: 102))
@@ -634,7 +634,8 @@ final class DimWallpaperCoreTests: XCTestCase {
         XCTAssertEqual(migrated.focusScope, .frontApplication)
         XCTAssertFalse(migrated.dimMenuBar)
         XCTAssertFalse(migrated.dimDock)
-        XCTAssertEqual(migrated.focusMultiDisplayPolicy, .dimInactiveScreens)
+        XCTAssertEqual(migrated.focusMultiDisplayPolicy, .perDisplayFront)
+        XCTAssertTrue(migrated.pauseFocusOnFullscreen)
         XCTAssertEqual(migrated.focusTransitionSpeed, .snappy)
         XCTAssertTrue(migrated.focusExcludedBundleIDs.isEmpty)
         XCTAssertTrue(migrated.focusHotKeyEnabled)
@@ -782,7 +783,7 @@ final class DimWallpaperCoreTests: XCTestCase {
                 scope: .frontApplication,
                 dimMenuBar: false,
                 dimDock: dimDock,
-                multiDisplayPolicy: .dimInactiveScreens
+                multiDisplayPolicy: .dimSecondaryCompletely
             )
             XCTAssertEqual(plans.count, 2)
 
@@ -809,7 +810,7 @@ final class DimWallpaperCoreTests: XCTestCase {
             scope: .frontApplication,
             dimMenuBar: true,
             dimDock: false,
-            multiDisplayPolicy: .dimInactiveScreens
+            multiDisplayPolicy: .dimSecondaryCompletely
         )
         XCTAssertEqual(dimmedPlans[1].partition.menuBarStripRect, CGRect(x: 1920, y: 923, width: 1470, height: 33))
         XCTAssertEqual(dimmedPlans[1].partition.mainRect, CGRect(x: 1920, y: 0, width: 1470, height: 923))
@@ -888,7 +889,7 @@ final class DimWallpaperCoreTests: XCTestCase {
             scope: .frontApplication,
             dimMenuBar: false,
             dimDock: false,
-            multiDisplayPolicy: .dimInactiveScreens
+            multiDisplayPolicy: .dimSecondaryCompletely
         )
         XCTAssertEqual(plans[0].placement, .hidden)
         XCTAssertEqual(plans[0].targetAlpha, 0.0, accuracy: 0.0001)
@@ -951,7 +952,7 @@ final class DimWallpaperCoreTests: XCTestCase {
             scope: .frontApplication,
             dimMenuBar: false,
             dimDock: false,
-            multiDisplayPolicy: .dimInactiveScreens
+            multiDisplayPolicy: .dimSecondaryCompletely
         )
         XCTAssertEqual(finderDesktopPlans.map(\.placement), [.hidden, .hidden])
         XCTAssertEqual(finderDesktopPlans.map(\.targetAlpha), [0.0, 0.0])
@@ -964,6 +965,285 @@ final class DimWallpaperCoreTests: XCTestCase {
         resolver.recordFrontmostAppFast(safari)
         XCTAssertFalse(resolver.isInDesktopState)
         XCTAssertEqual(resolver.lastExternalFrontmostApp, safari)
+    }
+
+    func testFullscreenVideoAutoExemptionOnPrimaryAndSecondaryDisplays() {
+        let primary = ScreenGeometry(
+            displayID: 1,
+            frame: CGRect(x: 0, y: 0, width: 1920, height: 1080),
+            visibleFrame: CGRect(x: 0, y: 75, width: 1920, height: 975),
+            isPrimary: true
+        )
+        let secondary = ScreenGeometry(
+            displayID: 2,
+            frame: CGRect(x: 1920, y: 0, width: 1470, height: 956),
+            visibleFrame: CGRect(x: 1920, y: 0, width: 1470, height: 924),
+            isPrimary: false,
+            safeAreaTopInset: 32
+        )
+        let screens = [primary, secondary]
+
+        // Scenario 1: Primary display playing borderless/native fullscreen video (focused)
+        let primaryFullscreenVideo = ObservedWindowInfo(
+            windowNumber: 701,
+            ownerPID: 500,
+            layer: 0,
+            cgBounds: CGRect(x: 0, y: 0, width: 1920, height: 1080),
+            ownerName: "IINA",
+            ownerBundleIdentifier: "com.colliderli.iina"
+        )
+        let secondaryEditor = ObservedWindowInfo(
+            windowNumber: 702,
+            ownerPID: 600,
+            layer: 0,
+            cgBounds: CGRect(x: 2020, y: 180, width: 1100, height: 700),
+            ownerName: "Code",
+            ownerBundleIdentifier: "com.microsoft.VSCode"
+        )
+        let plansPrimaryFS = FocusWindowOrderPlanner.plan(
+            screens: screens,
+            windows: [primaryFullscreenVideo, secondaryEditor],
+            targetPID: 500,
+            selfPID: 999,
+            isEnabled: true,
+            intensity: 0.60,
+            scope: .frontApplication,
+            dimMenuBar: false,
+            dimDock: false,
+            multiDisplayPolicy: .perDisplayFront,
+            pauseFocusOnFullscreen: true
+        )
+        XCTAssertEqual(plansPrimaryFS[0].placement, .hidden)
+        XCTAssertEqual(plansPrimaryFS[0].targetAlpha, 0.0, accuracy: 0.0001)
+        XCTAssertEqual(plansPrimaryFS[1].placement, .orderBelow(windowNumber: 702))
+
+        // Scenario 2: User works on primary display while secondary display plays fullscreen video,
+        // even when policy is .dimSecondaryCompletely, fullscreen video must remain un-dimmed.
+        let primaryWorkWindow = ObservedWindowInfo(
+            windowNumber: 710,
+            ownerPID: 600,
+            layer: 0,
+            cgBounds: CGRect(x: 120, y: 120, width: 1200, height: 760),
+            ownerName: "ChatGPT",
+            ownerBundleIdentifier: "com.openai.chat"
+        )
+        let secondaryFullscreenVideo = ObservedWindowInfo(
+            windowNumber: 711,
+            ownerPID: 500,
+            layer: 0,
+            cgBounds: CGRect(x: 1920, y: 124, width: 1470, height: 956),
+            ownerName: "Safari",
+            ownerBundleIdentifier: "com.apple.Safari"
+        )
+        let plansSecondaryFS = FocusWindowOrderPlanner.plan(
+            screens: screens,
+            windows: [primaryWorkWindow, secondaryFullscreenVideo],
+            targetPID: 600,
+            selfPID: 999,
+            isEnabled: true,
+            intensity: 0.60,
+            scope: .frontApplication,
+            dimMenuBar: false,
+            dimDock: false,
+            multiDisplayPolicy: .dimSecondaryCompletely,
+            pauseFocusOnFullscreen: true
+        )
+        XCTAssertEqual(plansSecondaryFS[0].placement, .orderBelow(windowNumber: 710))
+        XCTAssertEqual(plansSecondaryFS[1].placement, .hidden)
+        XCTAssertEqual(plansSecondaryFS[1].targetAlpha, 0.0, accuracy: 0.0001)
+
+        // Scenario 3: Auto-hidden menu bar screen with window covering >= 95% visibleFrame is exempted,
+        // and turning pauseFocusOnFullscreen off restores normal dimming.
+        let autoHideScreen = ScreenGeometry(
+            displayID: 3,
+            frame: CGRect(x: 0, y: 0, width: 1920, height: 1080),
+            visibleFrame: CGRect(x: 0, y: 0, width: 1920, height: 1080),
+            isPrimary: true
+        )
+        let nearFullWindow = ObservedWindowInfo(
+            windowNumber: 720,
+            ownerPID: 500,
+            layer: 0,
+            cgBounds: CGRect(x: 10, y: 10, width: 1900, height: 1060),
+            ownerName: "IINA",
+            ownerBundleIdentifier: "com.colliderli.iina"
+        )
+        let autoHideExempt = FocusWindowOrderPlanner.plan(
+            screens: [autoHideScreen],
+            windows: [nearFullWindow],
+            targetPID: 500,
+            selfPID: 999,
+            isEnabled: true,
+            intensity: 0.60,
+            scope: .frontApplication,
+            dimMenuBar: false,
+            dimDock: false,
+            multiDisplayPolicy: .perDisplayFront,
+            pauseFocusOnFullscreen: true
+        )
+        XCTAssertEqual(autoHideExempt[0].placement, .hidden)
+
+        let autoHideNoExempt = FocusWindowOrderPlanner.plan(
+            screens: [autoHideScreen],
+            windows: [nearFullWindow],
+            targetPID: 500,
+            selfPID: 999,
+            isEnabled: true,
+            intensity: 0.60,
+            scope: .frontApplication,
+            dimMenuBar: false,
+            dimDock: false,
+            multiDisplayPolicy: .perDisplayFront,
+            pauseFocusOnFullscreen: false
+        )
+        XCTAssertEqual(autoHideNoExempt[0].placement, .orderBelow(windowNumber: 720))
+    }
+
+    func testPerDisplayFrontPreservesSecondaryTopWindowAndHidesEmptyOrExcludedSecondary() {
+        let primary = ScreenGeometry(
+            displayID: 1,
+            frame: CGRect(x: 0, y: 0, width: 1920, height: 1080),
+            visibleFrame: CGRect(x: 0, y: 75, width: 1920, height: 975),
+            isPrimary: true
+        )
+        let secondary = ScreenGeometry(
+            displayID: 2,
+            frame: CGRect(x: 1920, y: 0, width: 1470, height: 956),
+            visibleFrame: CGRect(x: 1920, y: 0, width: 1470, height: 924),
+            isPrimary: false,
+            safeAreaTopInset: 32
+        )
+        let screens = [primary, secondary]
+
+        let primaryTop = ObservedWindowInfo(
+            windowNumber: 801,
+            ownerPID: 100,
+            layer: 0,
+            cgBounds: CGRect(x: 100, y: 100, width: 1000, height: 700),
+            ownerName: "Codex",
+            ownerBundleIdentifier: "com.openai.codex"
+        )
+        let primaryBack = ObservedWindowInfo(
+            windowNumber: 802,
+            ownerPID: 101,
+            layer: 0,
+            cgBounds: CGRect(x: 300, y: 140, width: 1000, height: 700),
+            ownerName: "Terminal",
+            ownerBundleIdentifier: "com.apple.Terminal"
+        )
+        let secondaryTop1 = ObservedWindowInfo(
+            windowNumber: 811,
+            ownerPID: 200,
+            layer: 0,
+            cgBounds: CGRect(x: 2000, y: 200, width: 900, height: 600),
+            ownerName: "Safari",
+            ownerBundleIdentifier: "com.apple.Safari"
+        )
+        let secondaryTop2 = ObservedWindowInfo(
+            windowNumber: 812,
+            ownerPID: 200,
+            layer: 0,
+            cgBounds: CGRect(x: 2080, y: 240, width: 850, height: 560),
+            ownerName: "Safari",
+            ownerBundleIdentifier: "com.apple.Safari"
+        )
+        let secondaryBack = ObservedWindowInfo(
+            windowNumber: 813,
+            ownerPID: 201,
+            layer: 0,
+            cgBounds: CGRect(x: 1980, y: 220, width: 950, height: 620),
+            ownerName: "Notes",
+            ownerBundleIdentifier: "com.apple.Notes"
+        )
+
+        let perDisplayApp = FocusWindowOrderPlanner.plan(
+            screens: screens,
+            windows: [primaryTop, primaryBack, secondaryTop1, secondaryTop2, secondaryBack],
+            targetPID: 100,
+            selfPID: 999,
+            isEnabled: true,
+            intensity: 0.55,
+            scope: .frontApplication,
+            dimMenuBar: false,
+            dimDock: false,
+            multiDisplayPolicy: .perDisplayFront
+        )
+        XCTAssertEqual(perDisplayApp[0].placement, .orderBelow(windowNumber: 801))
+        XCTAssertEqual(perDisplayApp[1].placement, .orderBelow(windowNumber: 812))
+        XCTAssertEqual(perDisplayApp[1].foregroundWindowFrames.count, 2)
+
+        let perDisplaySingleWindow = FocusWindowOrderPlanner.plan(
+            screens: screens,
+            windows: [primaryTop, primaryBack, secondaryTop1, secondaryTop2, secondaryBack],
+            targetPID: 100,
+            selfPID: 999,
+            isEnabled: true,
+            intensity: 0.55,
+            scope: .frontWindow,
+            dimMenuBar: false,
+            dimDock: false,
+            multiDisplayPolicy: .perDisplayFront
+        )
+        XCTAssertEqual(perDisplaySingleWindow[0].placement, .orderBelow(windowNumber: 801))
+        XCTAssertEqual(perDisplaySingleWindow[1].placement, .orderBelow(windowNumber: 811))
+        XCTAssertEqual(perDisplaySingleWindow[1].foregroundWindowFrames.count, 1)
+
+        // Secondary display whose top app is excluded stays hidden
+        let excludedSecondaryApp = FocusWindowOrderPlanner.plan(
+            screens: screens,
+            windows: [primaryTop, secondaryTop1, secondaryBack],
+            targetPID: 100,
+            selfPID: 999,
+            isEnabled: true,
+            intensity: 0.55,
+            scope: .frontApplication,
+            dimMenuBar: false,
+            dimDock: false,
+            multiDisplayPolicy: .perDisplayFront,
+            excludedBundleIDs: ["com.apple.Safari"]
+        )
+        XCTAssertEqual(excludedSecondaryApp[0].placement, .orderBelow(windowNumber: 801))
+        XCTAssertEqual(excludedSecondaryApp[1].placement, .hidden)
+
+        // Empty secondary display stays hidden (never blacked out)
+        let emptySecondary = FocusWindowOrderPlanner.plan(
+            screens: screens,
+            windows: [primaryTop, primaryBack],
+            targetPID: 100,
+            selfPID: 999,
+            isEnabled: true,
+            intensity: 0.55,
+            scope: .frontApplication,
+            dimMenuBar: false,
+            dimDock: false,
+            multiDisplayPolicy: .perDisplayFront
+        )
+        XCTAssertEqual(emptySecondary[0].placement, .orderBelow(windowNumber: 801))
+        XCTAssertEqual(emptySecondary[1].placement, .hidden)
+        XCTAssertEqual(emptySecondary[1].targetAlpha, 0.0, accuracy: 0.0001)
+    }
+
+    func testLegacyDimInactiveScreensMigratesToPerDisplayFront() throws {
+        let suiteName = "local.zjx.DimWallpaper.LegacyPolicyMigration.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        defaults.set("dimInactiveScreens", forKey: PreferenceKey.focusMultiDisplayPolicy)
+        let store = PreferencesStore(userDefaults: defaults, suiteName: suiteName)
+        let loaded = store.load()
+        XCTAssertEqual(loaded.focusMultiDisplayPolicy, .perDisplayFront)
+        XCTAssertTrue(loaded.pauseFocusOnFullscreen)
+        XCTAssertEqual(defaults.string(forKey: PreferenceKey.focusMultiDisplayPolicy), FocusMultiDisplayPolicy.perDisplayFront.rawValue)
+
+        // Explicit dimSecondaryCompletely is preserved without migrating away
+        defaults.set(FocusMultiDisplayPolicy.dimSecondaryCompletely.rawValue, forKey: PreferenceKey.focusMultiDisplayPolicy)
+        XCTAssertEqual(store.load().focusMultiDisplayPolicy, .dimSecondaryCompletely)
+
+        // Codable snapshot containing legacy rawValue also decodes to perDisplayFront
+        let legacyJSON = Data("{\"focusMultiDisplayPolicy\":\"dimInactiveScreens\"}".utf8)
+        let decoded = try JSONDecoder().decode(DimmingSnapshot.self, from: legacyJSON)
+        XCTAssertEqual(decoded.focusMultiDisplayPolicy, .perDisplayFront)
+        XCTAssertTrue(decoded.pauseFocusOnFullscreen)
     }
 
     private func assertPartitionDisjoint(

@@ -183,6 +183,8 @@ public struct LaunchOptions: Equatable, Sendable {
     public var dimMenuBarOverride: Bool?
     public var dimDockOverride: Bool?
     public var focusScopeOverride: FocusScope?
+    public var focusMultiDisplayPolicyOverride: FocusMultiDisplayPolicy?
+    public var pauseFocusOnFullscreenOverride: Bool?
 
     public init(
         printStatus: Bool = false,
@@ -194,7 +196,9 @@ public struct LaunchOptions: Equatable, Sendable {
         focusIntensityOverride: Double? = nil,
         dimMenuBarOverride: Bool? = nil,
         dimDockOverride: Bool? = nil,
-        focusScopeOverride: FocusScope? = nil
+        focusScopeOverride: FocusScope? = nil,
+        focusMultiDisplayPolicyOverride: FocusMultiDisplayPolicy? = nil,
+        pauseFocusOnFullscreenOverride: Bool? = nil
     ) {
         self.printStatus = printStatus
         self.printStatusJSON = printStatusJSON
@@ -206,6 +210,8 @@ public struct LaunchOptions: Equatable, Sendable {
         self.dimMenuBarOverride = dimMenuBarOverride
         self.dimDockOverride = dimDockOverride
         self.focusScopeOverride = focusScopeOverride
+        self.focusMultiDisplayPolicyOverride = focusMultiDisplayPolicyOverride
+        self.pauseFocusOnFullscreenOverride = pauseFocusOnFullscreenOverride
     }
 
     public var hasFocusOverrides: Bool {
@@ -214,6 +220,8 @@ public struct LaunchOptions: Equatable, Sendable {
             || dimMenuBarOverride != nil
             || dimDockOverride != nil
             || focusScopeOverride != nil
+            || focusMultiDisplayPolicyOverride != nil
+            || pauseFocusOnFullscreenOverride != nil
     }
 
     public func applyingOverrides(to snapshot: DimmingSnapshot) -> DimmingSnapshot {
@@ -232,6 +240,12 @@ public struct LaunchOptions: Equatable, Sendable {
         }
         if let focusScopeOverride {
             updated.focusScope = focusScopeOverride
+        }
+        if let focusMultiDisplayPolicyOverride {
+            updated.focusMultiDisplayPolicy = focusMultiDisplayPolicyOverride
+        }
+        if let pauseFocusOnFullscreenOverride {
+            updated.pauseFocusOnFullscreen = pauseFocusOnFullscreenOverride
         }
         return updated
     }
@@ -286,6 +300,14 @@ public struct LaunchOptions: Equatable, Sendable {
                 if let rawValue = nextValue(after: &index, in: arguments), let parsed = FocusScope(rawValue: rawValue) {
                     options.focusScopeOverride = parsed
                 }
+            case "--focus-policy":
+                if let rawValue = nextValue(after: &index, in: arguments) {
+                    options.focusMultiDisplayPolicyOverride = FocusMultiDisplayPolicy.fromStoredValue(rawValue)
+                }
+            case "--pause-on-fullscreen":
+                if let rawValue = nextValue(after: &index, in: arguments), let parsed = parseBool(rawValue) {
+                    options.pauseFocusOnFullscreenOverride = parsed
+                }
             default:
                 if argument.hasPrefix("--defaults-suite=") {
                     let candidate = String(argument.dropFirst("--defaults-suite=".count))
@@ -318,6 +340,14 @@ public struct LaunchOptions: Equatable, Sendable {
                     let raw = String(argument.dropFirst("--focus-scope=".count))
                     if let parsed = FocusScope(rawValue: raw) {
                         options.focusScopeOverride = parsed
+                    }
+                } else if argument.hasPrefix("--focus-policy=") {
+                    let raw = String(argument.dropFirst("--focus-policy=".count))
+                    options.focusMultiDisplayPolicyOverride = FocusMultiDisplayPolicy.fromStoredValue(raw)
+                } else if argument.hasPrefix("--pause-on-fullscreen=") {
+                    let raw = String(argument.dropFirst("--pause-on-fullscreen=".count))
+                    if let parsed = parseBool(raw) {
+                        options.pauseFocusOnFullscreenOverride = parsed
                     }
                 }
             }

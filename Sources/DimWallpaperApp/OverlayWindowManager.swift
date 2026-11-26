@@ -310,6 +310,14 @@ final class DimWallpaperController: ObservableObject {
         onStatusAppearanceChanged?()
     }
 
+    func setPauseFocusOnFullscreen(_ value: Bool) {
+        guard state.snapshot.pauseFocusOnFullscreen != value else { return }
+        state.setPauseFocusOnFullscreen(value)
+        refreshFocusOverlays(animated: true, forceUpdate: true, isManualAction: true)
+        scheduleDebouncedPersistence()
+        onStatusAppearanceChanged?()
+    }
+
     func setFocusTransitionSpeed(_ value: FocusTransitionSpeed) {
         guard state.snapshot.focusTransitionSpeed != value else { return }
         state.setFocusTransitionSpeed(value)
@@ -692,7 +700,9 @@ final class DimWallpaperController: ObservableObject {
             dimMenuBar: state.snapshot.dimMenuBar,
             dimDock: state.snapshot.dimDock,
             multiDisplayPolicy: state.snapshot.focusMultiDisplayPolicy,
-            excludedDisplayIDs: state.snapshot.excludedDisplayIDs
+            excludedDisplayIDs: state.snapshot.excludedDisplayIDs,
+            pauseFocusOnFullscreen: state.snapshot.pauseFocusOnFullscreen,
+            excludedBundleIDs: state.snapshot.focusExcludedBundleIDs
         )
 
         let onlineIDs = Set(screenGeometries.map(\.displayID))
@@ -971,7 +981,7 @@ final class DimWallpaperController: ObservableObject {
         window.isExcludedFromWindowsMenu = true
         window.isReleasedWhenClosed = false
         window.animationBehavior = .none
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
         window.setFrame(frame, display: false)
         return window
     }
@@ -1133,7 +1143,7 @@ final class DimWallpaperController: ObservableObject {
         window.isExcludedFromWindowsMenu = true
         window.isReleasedWhenClosed = false
         window.animationBehavior = .none
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
         window.setFrame(screen.frame, display: false)
         return window
     }

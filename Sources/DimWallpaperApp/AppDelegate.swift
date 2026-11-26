@@ -224,6 +224,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
         scopeMenuItem.submenu = scopeSubmenu
         menu.addItem(scopeMenuItem)
 
+        let multiDisplaySubmenu = NSMenu()
+        for policy in FocusMultiDisplayPolicy.allCases {
+            let policyItem = NSMenuItem(
+                title: policy.title,
+                action: #selector(selectFocusMultiDisplayPolicyFromMenu(_:)),
+                keyEquivalent: ""
+            )
+            policyItem.target = self
+            policyItem.representedObject = policy.rawValue
+            policyItem.state = controller.state.snapshot.focusMultiDisplayPolicy == policy ? .on : .off
+            multiDisplaySubmenu.addItem(policyItem)
+        }
+        let multiDisplayMenuItem = NSMenuItem(title: "多屏策略", action: nil, keyEquivalent: "")
+        multiDisplayMenuItem.submenu = multiDisplaySubmenu
+        menu.addItem(multiDisplayMenuItem)
+
+        let fullscreenExemptItem = NSMenuItem(
+            title: "全屏视频自动豁免",
+            action: #selector(togglePauseFocusOnFullscreenFromMenu),
+            keyEquivalent: ""
+        )
+        fullscreenExemptItem.target = self
+        fullscreenExemptItem.state = controller.state.snapshot.pauseFocusOnFullscreen ? .on : .off
+        menu.addItem(fullscreenExemptItem)
+
         let focusPresetSubmenu = NSMenu()
         for preset in FocusPreset.allCases {
             let item = NSMenuItem(
@@ -295,6 +320,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSM
         guard let rawValue = sender.representedObject as? String,
               let scope = FocusScope(rawValue: rawValue) else { return }
         controller.setFocusScope(scope)
+    }
+
+    @objc private func selectFocusMultiDisplayPolicyFromMenu(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String,
+              let policy = FocusMultiDisplayPolicy(rawValue: rawValue) else { return }
+        controller.setFocusMultiDisplayPolicy(policy)
+    }
+
+    @objc private func togglePauseFocusOnFullscreenFromMenu() {
+        controller.setPauseFocusOnFullscreen(!controller.state.snapshot.pauseFocusOnFullscreen)
     }
 
     @objc private func selectFocusPresetFromMenu(_ sender: NSMenuItem) {

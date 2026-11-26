@@ -114,16 +114,49 @@ public enum FocusScope: String, CaseIterable, Identifiable, Codable, Sendable {
 }
 
 public enum FocusMultiDisplayPolicy: String, CaseIterable, Identifiable, Codable, Sendable {
-    case dimInactiveScreens
+    case perDisplayFront
     case activeScreenOnly
+    case dimSecondaryCompletely
 
     public var id: String { rawValue }
 
     public var title: String {
         switch self {
-        case .dimInactiveScreens: "副屏同步压暗"
-        case .activeScreenOnly: "仅活跃屏幕"
+        case .perDisplayFront: "每屏保留最前窗口"
+        case .activeScreenOnly: "仅焦点屏幕"
+        case .dimSecondaryCompletely: "副屏整屏压暗"
         }
+    }
+
+    public var shortTitle: String {
+        switch self {
+        case .perDisplayFront: "每屏最前"
+        case .activeScreenOnly: "仅焦点屏"
+        case .dimSecondaryCompletely: "压暗副屏"
+        }
+    }
+
+    public var detailDescription: String {
+        switch self {
+        case .perDisplayFront: "副屏最前窗口保持原亮，仅压暗其后杂窗与壁纸；空副屏不遮挡"
+        case .activeScreenOnly: "仅当前焦点所在屏幕启用专注遮罩，其余副屏完全保持原亮"
+        case .dimSecondaryCompletely: "除全屏视频外，将非焦点副屏全部压暗以屏蔽视觉干扰"
+        }
+    }
+
+    public static func fromStoredValue(_ rawValue: String?) -> FocusMultiDisplayPolicy {
+        guard let rawValue else { return .perDisplayFront }
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed == "dimInactiveScreens" {
+            return .perDisplayFront
+        }
+        return FocusMultiDisplayPolicy(rawValue: trimmed) ?? .perDisplayFront
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try? container.decode(String.self)
+        self = Self.fromStoredValue(rawValue)
     }
 }
 
@@ -835,7 +868,9 @@ public enum FocusWindowOrderPlanner {
         dimMenuBar: Bool,
         dimDock: Bool,
         multiDisplayPolicy: FocusMultiDisplayPolicy,
-        excludedDisplayIDs: Set<UInt32> = []
+        excludedDisplayIDs: Set<UInt32> = [],
+        pauseFocusOnFullscreen: Bool = true,
+        excludedBundleIDs: Set<String> = []
     ) -> [FocusDisplayPlan] {
         guard !screens.isEmpty else { return [] }
 
@@ -844,6 +879,12 @@ public enum FocusWindowOrderPlanner {
             screens: screens,
             windows: windows,
             primaryScreenHeight: primaryHeight
+        )
+        let hasObservedSystemMenuBar = !systemMenuBarBottomByDisplay.isEmpty
+        let normalizedExcludedBundleIDs = Set(
+            excludedBundleIDs
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                .filter { !$0.isEmpty }
         )
 
         func makeHiddenPlan(for screen: ScreenGeometry) -> FocusDisplayPlan {
@@ -879,6 +920,11 @@ public enum FocusWindowOrderPlanner {
             (window, FocusCoordinateSpace.cgRectToAppKitRect(window.cgBounds, primaryScreenHeight: primaryHeight))
         }
 
+        let targetHasActiveStageWindow = eligibleWindows.contains { $0.window.ownerPID == targetPID }
+        guard targetHasActiveStageWindow else {
+            return screens.map(makeHiddenPlan)
+        }
+
         let globalFrontmostTargetWindowNumber: Int? = eligibleWindows.first(where: { $0.window.ownerPID == targetPID })?.window.windowNumber
 
         let candidatePlans: [FocusDisplayPlan] = screens.map { screen in
@@ -888,6 +934,16 @@ public enum FocusWindowOrderPlanner {
 
             let screenWindows = eligibleWindows.filter { entry in
                 isActiveStageWindowOnScreen(windowRect: entry.appKitRect, screenFrame: screen.frame)
+            }
+
+            if pauseFocusOnFullscreen,
+               isScreenShowingFullscreenContent(
+                   screen: screen,
+                   screenWindows: screenWindows,
+                   hasObservedSystemMenuBarOnAnyScreen: hasObservedSystemMenuBar,
+                   screenHasSystemMenuBar: systemMenuBarBottomByDisplay[screen.displayID] != nil
+               ) {
+                return makeHiddenPlan(for: screen)
             }
 
             let placement: FocusWindowPlacement
@@ -901,8 +957,14 @@ public enum FocusWindowOrderPlanner {
                     placement = .orderBelow(windowNumber: topMatch.window.windowNumber)
                     foregroundFrames = [topMatch.appKitRect]
                 } else {
-                    placement = inactivePlacement(for: multiDisplayPolicy)
-                    foregroundFrames = []
+                    let secondary = secondaryDisplayPlacement(
+                        screenWindows: screenWindows,
+                        scope: scope,
+                        policy: multiDisplayPolicy,
+                        normalizedExcludedBundleIDs: normalizedExcludedBundleIDs
+                    )
+                    placement = secondary.placement
+                    foregroundFrames = secondary.foregroundFrames
                 }
 
             case .frontApplication:
@@ -917,8 +979,14 @@ public enum FocusWindowOrderPlanner {
                     placement = .orderBelow(windowNumber: anchorWindowNumber)
                     foregroundFrames = collectedFrames
                 } else {
-                    placement = inactivePlacement(for: multiDisplayPolicy)
-                    foregroundFrames = []
+                    let secondary = secondaryDisplayPlacement(
+                        screenWindows: screenWindows,
+                        scope: scope,
+                        policy: multiDisplayPolicy,
+                        normalizedExcludedBundleIDs: normalizedExcludedBundleIDs
+                    )
+                    placement = secondary.placement
+                    foregroundFrames = secondary.foregroundFrames
                 }
             }
 
@@ -942,16 +1010,60 @@ public enum FocusWindowOrderPlanner {
             )
         }
 
-        let hasAnyActiveForegroundWindow = candidatePlans.contains { plan in
-            if case .orderBelow = plan.placement {
-                return true
-            }
-            return false
-        }
-        guard hasAnyActiveForegroundWindow else {
-            return screens.map(makeHiddenPlan)
-        }
         return candidatePlans
+    }
+
+    public static func isScreenShowingFullscreenContent(
+        screen: ScreenGeometry,
+        screenWindows: [(window: ObservedWindowInfo, appKitRect: CGRect)],
+        hasObservedSystemMenuBarOnAnyScreen: Bool = false,
+        screenHasSystemMenuBar: Bool = true
+    ) -> Bool {
+        guard let topEntry = screenWindows.first else { return false }
+        guard screen.frame.width > 1, screen.frame.height > 1 else { return false }
+
+        let topPID = topEntry.window.ownerPID
+        var leadingOwnerEntries: [(window: ObservedWindowInfo, appKitRect: CGRect)] = []
+        for entry in screenWindows {
+            guard entry.window.ownerPID == topPID else { break }
+            leadingOwnerEntries.append(entry)
+        }
+
+        let menuBarAutoHidden = screen.visibleFrame.height >= screen.frame.height - 2.0
+        let visibleArea = screen.visibleFrame.width * screen.visibleFrame.height
+
+        for entry in leadingOwnerEntries {
+            let frameOverlap = entry.appKitRect.intersection(screen.frame)
+            if !frameOverlap.isNull {
+                let widthRatio = frameOverlap.width / screen.frame.width
+                let heightRatio = frameOverlap.height / screen.frame.height
+                if widthRatio >= 0.92, heightRatio >= 0.92 {
+                    return true
+                }
+            }
+
+            if menuBarAutoHidden, visibleArea > 1 {
+                let visibleOverlap = entry.appKitRect.intersection(screen.visibleFrame)
+                if !visibleOverlap.isNull {
+                    let areaRatio = (visibleOverlap.width * visibleOverlap.height) / visibleArea
+                    if areaRatio >= 0.95 {
+                        return true
+                    }
+                }
+            }
+
+            if hasObservedSystemMenuBarOnAnyScreen, !screenHasSystemMenuBar, visibleArea > 1 {
+                let visibleOverlap = entry.appKitRect.intersection(screen.visibleFrame)
+                if !visibleOverlap.isNull {
+                    let widthRatio = visibleOverlap.width / max(1, screen.visibleFrame.width)
+                    let heightRatio = visibleOverlap.height / max(1, screen.visibleFrame.height)
+                    if widthRatio >= 0.90, heightRatio >= 0.90 {
+                        return true
+                    }
+                }
+            }
+        }
+        return false
     }
 
     private static func resolvedSystemMenuBarBottomByDisplay(
@@ -998,10 +1110,42 @@ public enum FocusWindowOrderPlanner {
         return result
     }
 
-    private static func inactivePlacement(for policy: FocusMultiDisplayPolicy) -> FocusWindowPlacement {
+    private static func secondaryDisplayPlacement(
+        screenWindows: [(window: ObservedWindowInfo, appKitRect: CGRect)],
+        scope: FocusScope,
+        policy: FocusMultiDisplayPolicy,
+        normalizedExcludedBundleIDs: Set<String>
+    ) -> (placement: FocusWindowPlacement, foregroundFrames: [CGRect]) {
         switch policy {
-        case .dimInactiveScreens: .orderFrontNormal
-        case .activeScreenOnly: .hidden
+        case .perDisplayFront:
+            guard let secondaryTop = screenWindows.first else {
+                return (.hidden, [])
+            }
+            if let bundleID = secondaryTop.window.ownerBundleIdentifier?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased(),
+               !bundleID.isEmpty,
+               normalizedExcludedBundleIDs.contains(bundleID) {
+                return (.hidden, [])
+            }
+            switch scope {
+            case .frontWindow:
+                return (.orderBelow(windowNumber: secondaryTop.window.windowNumber), [secondaryTop.appKitRect])
+            case .frontApplication:
+                let secondaryPID = secondaryTop.window.ownerPID
+                var anchorWindowNumber = secondaryTop.window.windowNumber
+                var collectedFrames: [CGRect] = []
+                for entry in screenWindows {
+                    guard entry.window.ownerPID == secondaryPID else { break }
+                    anchorWindowNumber = entry.window.windowNumber
+                    collectedFrames.append(entry.appKitRect)
+                }
+                return (.orderBelow(windowNumber: anchorWindowNumber), collectedFrames)
+            }
+        case .activeScreenOnly:
+            return (.hidden, [])
+        case .dimSecondaryCompletely:
+            return (.orderFrontNormal, [])
         }
     }
 }
