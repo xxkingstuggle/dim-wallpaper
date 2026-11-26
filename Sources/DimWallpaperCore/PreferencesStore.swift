@@ -18,6 +18,7 @@ public enum PreferenceKey {
     public static let focusDimDock = "focusDimDock"
     public static let focusMultiDisplayPolicy = "focusMultiDisplayPolicy"
     public static let focusPauseOnFullscreen = "focusPauseOnFullscreen"
+    public static let focusEdgeFeather = "focusEdgeFeather"
     public static let focusTransitionSpeed = "focusTransitionSpeed"
     public static let focusExcludedBundleIDs = "focusExcludedBundleIDs"
     public static let focusHotKeyEnabled = "focusHotKeyEnabled"
@@ -41,6 +42,7 @@ public struct DimmingSnapshot: Equatable, Codable, Sendable {
     public var dimDock: Bool
     public var focusMultiDisplayPolicy: FocusMultiDisplayPolicy
     public var pauseFocusOnFullscreen: Bool
+    public var focusEdgeFeather: FocusEdgeFeather
     public var focusTransitionSpeed: FocusTransitionSpeed
     public var focusExcludedBundleIDs: Set<String>
     public var focusHotKeyEnabled: Bool
@@ -62,7 +64,8 @@ public struct DimmingSnapshot: Equatable, Codable, Sendable {
         dimDock: Bool = false,
         focusMultiDisplayPolicy: FocusMultiDisplayPolicy = .perDisplayFront,
         pauseFocusOnFullscreen: Bool = true,
-        focusTransitionSpeed: FocusTransitionSpeed = .snappy,
+        focusEdgeFeather: FocusEdgeFeather = .soft,
+        focusTransitionSpeed: FocusTransitionSpeed = .softBreath,
         focusExcludedBundleIDs: Set<String> = [],
         focusHotKeyEnabled: Bool = true,
         focusHotKeyBinding: HotKeyBinding = .defaultFocusToggle
@@ -82,6 +85,7 @@ public struct DimmingSnapshot: Equatable, Codable, Sendable {
         self.dimDock = dimDock
         self.focusMultiDisplayPolicy = focusMultiDisplayPolicy
         self.pauseFocusOnFullscreen = pauseFocusOnFullscreen
+        self.focusEdgeFeather = focusEdgeFeather
         self.focusTransitionSpeed = focusTransitionSpeed
         self.focusExcludedBundleIDs = focusExcludedBundleIDs
         self.focusHotKeyEnabled = focusHotKeyEnabled
@@ -105,7 +109,8 @@ public struct DimmingSnapshot: Equatable, Codable, Sendable {
         let decodedDimDock = try container.decodeIfPresent(Bool.self, forKey: .dimDock) ?? false
         let decodedPolicy = try container.decodeIfPresent(FocusMultiDisplayPolicy.self, forKey: .focusMultiDisplayPolicy) ?? .perDisplayFront
         let decodedPauseOnFullscreen = try container.decodeIfPresent(Bool.self, forKey: .pauseFocusOnFullscreen) ?? true
-        let decodedSpeed = try container.decodeIfPresent(FocusTransitionSpeed.self, forKey: .focusTransitionSpeed) ?? .snappy
+        let decodedEdgeFeather = try container.decodeIfPresent(FocusEdgeFeather.self, forKey: .focusEdgeFeather) ?? .soft
+        let decodedSpeed = try container.decodeIfPresent(FocusTransitionSpeed.self, forKey: .focusTransitionSpeed) ?? .softBreath
         let decodedExcludedApps = try container.decodeIfPresent(Set<String>.self, forKey: .focusExcludedBundleIDs) ?? []
         let decodedFocusHotKeyEnabled = try container.decodeIfPresent(Bool.self, forKey: .focusHotKeyEnabled) ?? true
         let decodedFocusHotKeyBinding = try container.decodeIfPresent(HotKeyBinding.self, forKey: .focusHotKeyBinding) ?? .defaultFocusToggle
@@ -126,6 +131,7 @@ public struct DimmingSnapshot: Equatable, Codable, Sendable {
             dimDock: decodedDimDock,
             focusMultiDisplayPolicy: decodedPolicy,
             pauseFocusOnFullscreen: decodedPauseOnFullscreen,
+            focusEdgeFeather: decodedEdgeFeather,
             focusTransitionSpeed: decodedSpeed,
             focusExcludedBundleIDs: decodedExcludedApps,
             focusHotKeyEnabled: decodedFocusHotKeyEnabled,
@@ -174,7 +180,8 @@ public final class PreferencesStore {
             PreferenceKey.focusDimDock: false,
             PreferenceKey.focusMultiDisplayPolicy: FocusMultiDisplayPolicy.perDisplayFront.rawValue,
             PreferenceKey.focusPauseOnFullscreen: true,
-            PreferenceKey.focusTransitionSpeed: FocusTransitionSpeed.snappy.rawValue,
+            PreferenceKey.focusEdgeFeather: FocusEdgeFeather.soft.rawValue,
+            PreferenceKey.focusTransitionSpeed: FocusTransitionSpeed.softBreath.rawValue,
             PreferenceKey.focusExcludedBundleIDs: [String](),
             PreferenceKey.focusHotKeyEnabled: true,
             PreferenceKey.focusHotKeyKeyCode: Int(HotKeyBinding.defaultFocusToggle.keyCode),
@@ -221,8 +228,13 @@ public final class PreferencesStore {
             defaults.set(focusMultiDisplayPolicy.rawValue, forKey: PreferenceKey.focusMultiDisplayPolicy)
         }
         let pauseFocusOnFullscreen = defaults.bool(forKey: PreferenceKey.focusPauseOnFullscreen)
-        let rawSpeed = defaults.string(forKey: PreferenceKey.focusTransitionSpeed) ?? FocusTransitionSpeed.snappy.rawValue
-        let focusTransitionSpeed = FocusTransitionSpeed(rawValue: rawSpeed) ?? .snappy
+        let rawEdgeFeather = defaults.string(forKey: PreferenceKey.focusEdgeFeather)
+        let focusEdgeFeather = FocusEdgeFeather.fromStoredValue(rawEdgeFeather)
+        let rawSpeed = defaults.string(forKey: PreferenceKey.focusTransitionSpeed)
+        let focusTransitionSpeed = FocusTransitionSpeed.fromStoredValue(rawSpeed)
+        if let rawSpeed, rawSpeed != focusTransitionSpeed.rawValue {
+            defaults.set(focusTransitionSpeed.rawValue, forKey: PreferenceKey.focusTransitionSpeed)
+        }
 
         let rawExcludedBundles = defaults.stringArray(forKey: PreferenceKey.focusExcludedBundleIDs) ?? []
         let focusExcludedBundleIDs = Set(
@@ -254,6 +266,7 @@ public final class PreferencesStore {
             dimDock: dimDock,
             focusMultiDisplayPolicy: focusMultiDisplayPolicy,
             pauseFocusOnFullscreen: pauseFocusOnFullscreen,
+            focusEdgeFeather: focusEdgeFeather,
             focusTransitionSpeed: focusTransitionSpeed,
             focusExcludedBundleIDs: focusExcludedBundleIDs,
             focusHotKeyEnabled: focusHotKeyEnabled,
@@ -287,6 +300,7 @@ public final class PreferencesStore {
         defaults.set(snapshot.dimDock, forKey: PreferenceKey.focusDimDock)
         defaults.set(snapshot.focusMultiDisplayPolicy.rawValue, forKey: PreferenceKey.focusMultiDisplayPolicy)
         defaults.set(snapshot.pauseFocusOnFullscreen, forKey: PreferenceKey.focusPauseOnFullscreen)
+        defaults.set(snapshot.focusEdgeFeather.rawValue, forKey: PreferenceKey.focusEdgeFeather)
         defaults.set(snapshot.focusTransitionSpeed.rawValue, forKey: PreferenceKey.focusTransitionSpeed)
         defaults.set(cleanedBundles, forKey: PreferenceKey.focusExcludedBundleIDs)
         defaults.set(snapshot.focusHotKeyEnabled, forKey: PreferenceKey.focusHotKeyEnabled)

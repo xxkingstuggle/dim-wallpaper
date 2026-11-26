@@ -54,6 +54,7 @@ struct ControlCenterView: View {
                 dimMenuBar: controller.state.snapshot.dimMenuBar,
                 dimDock: controller.state.snapshot.dimDock,
                 focusScope: controller.state.snapshot.focusScope,
+                focusEdgeFeather: controller.state.snapshot.focusEdgeFeather,
                 reduceTransparency: reduceTransparency
             )
             tabSelector
@@ -714,6 +715,46 @@ struct ControlCenterView: View {
                 .toggleStyle(.checkbox)
                 .font(.system(size: 11))
             }
+
+            Divider()
+                .opacity(reduceTransparency ? 0.9 : 0.45)
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    Text("顶边柔化")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(controller.state.snapshot.dimMenuBar ? "压暗菜单栏时自动无缝" : controller.state.snapshot.focusEdgeFeather.title)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(controller.state.snapshot.dimMenuBar ? Color.secondary : Color.indigo)
+                }
+
+                Picker(
+                    "顶边柔化",
+                    selection: Binding(
+                        get: { controller.state.snapshot.focusEdgeFeather },
+                        set: { controller.setFocusEdgeFeather($0) }
+                    )
+                ) {
+                    ForEach(FocusEdgeFeather.allCases) { feather in
+                        Text(feather.shortTitle).tag(feather)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .controlSize(.small)
+                .opacity(controller.state.snapshot.dimMenuBar ? 0.58 : 1.0)
+
+                Text(
+                    controller.state.snapshot.dimMenuBar
+                        ? "关闭「压暗顶部菜单栏」后生效，用于消除亮色菜单栏底沿的硬黑线"
+                        : controller.state.snapshot.focusEdgeFeather.detailDescription
+                )
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(11)
         .background(cardSurface)
@@ -792,26 +833,55 @@ struct ControlCenterView: View {
                 .controlSize(.mini)
             }
 
-            HStack(spacing: 8) {
-                Text("过渡速度")
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 4)
-                Picker(
-                    "过渡速度",
-                    selection: Binding(
-                        get: { controller.state.snapshot.focusTransitionSpeed },
-                        set: { controller.setFocusTransitionSpeed($0) }
-                    )
-                ) {
+            Divider()
+                .opacity(reduceTransparency ? 0.9 : 0.45)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("过渡动画")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(controller.state.snapshot.focusTransitionSpeed.subtitle)
+                        .font(.system(size: 10, weight: .medium).monospacedDigit())
+                        .foregroundStyle(.indigo)
+                }
+
+                HStack(spacing: 6) {
                     ForEach(FocusTransitionSpeed.allCases) { speed in
-                        Text(speed.title).tag(speed)
+                        let isSelected = controller.state.snapshot.focusTransitionSpeed == speed
+                        Button {
+                            controller.setFocusTransitionSpeed(speed)
+                        } label: {
+                            VStack(spacing: 2) {
+                                Text(speed.title)
+                                    .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
+                                    .foregroundStyle(isSelected ? .primary : .secondary)
+                                Text(speed.subtitle)
+                                    .font(.system(size: 9.2, weight: .regular).monospacedDigit())
+                                    .foregroundStyle(isSelected ? Color.indigo : Color.secondary)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.85)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                            .padding(.horizontal, 4)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(
+                                        isSelected
+                                            ? Color.indigo.opacity(reduceTransparency ? 0.22 : 0.16)
+                                            : (colorScheme == .dark ? Color.white.opacity(0.04) : Color.black.opacity(0.03))
+                                    )
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .stroke(isSelected ? Color.indigo.opacity(0.65) : cardBorderColor, lineWidth: isSelected ? 1 : 0.5)
+                            )
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .controlSize(.small)
-                .frame(width: 174)
             }
         }
         .padding(11)
@@ -995,7 +1065,7 @@ struct ControlCenterView: View {
                             .font(.system(size: 10, weight: .medium).monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
-                    Text("张家鑫 · Xin (@xxkingstuggle)")
+                    Text("由 Xin (@xxkingstuggle) 设计与开发")
                         .font(.system(size: 10.5))
                         .foregroundStyle(.secondary)
                 }
@@ -1139,6 +1209,7 @@ private struct DesktopPreviewCard: View {
     let dimMenuBar: Bool
     let dimDock: Bool
     let focusScope: FocusScope
+    let focusEdgeFeather: FocusEdgeFeather
     let reduceTransparency: Bool
 
     private var isWallpaperDimming: Bool {
@@ -1185,10 +1256,48 @@ private struct DesktopPreviewCard: View {
                 drawBackgroundDesktopLayer(in: &graphics, size: size)
             }
 
-            Color(red: focusRGB.red, green: focusRGB.green, blue: focusRGB.blue)
-                .opacity(isFocusDimming ? focusAlpha : 0)
+            GeometryReader { proxy in
+                let previewMenuBarHeight: CGFloat = 14
+                let focusBodyHeight = max(1, proxy.size.height - previewMenuBarHeight)
+                let previewFeatherPoints: CGFloat = {
+                    guard !dimMenuBar else { return 0 }
+                    switch focusEdgeFeather {
+                    case .soft: return 28
+                    case .subtle: return 14
+                    case .sharp: return 0
+                    }
+                }()
+                let baseFocusColor = Color(red: focusRGB.red, green: focusRGB.green, blue: focusRGB.blue)
+                let gradientStops: [Gradient.Stop] = {
+                    guard previewFeatherPoints > 0 else {
+                        let opacity = isFocusDimming ? focusAlpha : 0
+                        return [
+                            Gradient.Stop(color: baseFocusColor.opacity(opacity), location: 0),
+                            Gradient.Stop(color: baseFocusColor.opacity(opacity), location: 1),
+                        ]
+                    }
+                    let span = min(Double(previewFeatherPoints), Double(focusBodyHeight) * 0.35) / Double(focusBodyHeight)
+                    var stops = FocusEdgeFeatherCurve.sampleFractions.map { fraction in
+                        let opacity = isFocusDimming ? focusAlpha * FocusEdgeFeatherCurve.cosineWeight(fraction) : 0
+                        return Gradient.Stop(color: baseFocusColor.opacity(opacity), location: fraction * span)
+                    }
+                    if span < 1.0 {
+                        stops.append(Gradient.Stop(color: baseFocusColor.opacity(isFocusDimming ? focusAlpha : 0), location: 1.0))
+                    }
+                    return stops
+                }()
+
+                LinearGradient(
+                    gradient: Gradient(stops: gradientStops),
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .padding(.top, previewMenuBarHeight)
                 .animation(.easeInOut(duration: 0.20), value: focusAlpha)
                 .animation(.easeInOut(duration: 0.20), value: focusTint)
+                .animation(.easeInOut(duration: 0.20), value: focusEdgeFeather)
+                .animation(.easeInOut(duration: 0.20), value: dimMenuBar)
+            }
 
             Canvas { graphics, size in
                 drawForegroundAndSystemChrome(in: &graphics, size: size)

@@ -160,40 +160,210 @@ public enum FocusMultiDisplayPolicy: String, CaseIterable, Identifiable, Codable
     }
 }
 
-public enum FocusTransitionSpeed: String, CaseIterable, Identifiable, Codable, Sendable {
-    case gentle
-    case snappy
-    case instant
+public enum FocusEdgeFeather: String, CaseIterable, Identifiable, Codable, Sendable {
+    case soft
+    case subtle
+    case sharp
 
     public var id: String { rawValue }
 
     public var title: String {
         switch self {
-        case .gentle: "柔和"
-        case .snappy: "灵敏"
-        case .instant: "立即"
+        case .soft: "柔和晕影"
+        case .subtle: "细腻羽化"
+        case .sharp: "清晰硬边"
         }
     }
 
-    public var baseDuration: Double {
+    public var shortTitle: String {
         switch self {
-        case .gentle: 0.11
-        case .snappy: 0.06
-        case .instant: 0.0
+        case .soft: "柔和 38pt"
+        case .subtle: "细腻 18pt"
+        case .sharp: "硬边 0pt"
         }
     }
 
-    public func resolvedDuration(reduceMotion: Bool) -> Double {
-        reduceMotion ? 0.0 : baseDuration
-    }
-
-    public func resolvedManualDuration(reduceMotion: Bool) -> Double {
-        guard !reduceMotion else { return 0.0 }
+    public var menuTitle: String {
         switch self {
-        case .instant: return 0.0
-        case .snappy: return 0.06
-        case .gentle: return 0.07
+        case .soft: "柔和晕影 · 38pt"
+        case .subtle: "细腻羽化 · 18pt"
+        case .sharp: "清晰硬边 · 0pt"
         }
+    }
+
+    public var detailDescription: String {
+        switch self {
+        case .soft: "在未压暗菜单栏下沿生成 38pt 余弦柔化晕影，彻底消除硬黑线"
+        case .subtle: "在菜单栏下沿保留 18pt 细腻渐变过渡，边界更利落"
+        case .sharp: "关闭顶边羽化，遮罩从菜单栏下沿直接满强度生效"
+        }
+    }
+
+    public var featherPoints: CGFloat {
+        switch self {
+        case .soft: 38.0
+        case .subtle: 18.0
+        case .sharp: 0.0
+        }
+    }
+
+    public static func fromStoredValue(_ rawValue: String?) -> FocusEdgeFeather {
+        guard let rawValue else { return .soft }
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return FocusEdgeFeather(rawValue: trimmed) ?? .soft
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try? container.decode(String.self)
+        self = Self.fromStoredValue(rawValue)
+    }
+}
+
+public struct FocusEdgeFeatherStop: Equatable, Sendable {
+    public let location: Double
+    public let opacityWeight: Double
+
+    public init(location: Double, opacityWeight: Double) {
+        self.location = location
+        self.opacityWeight = opacityWeight
+    }
+}
+
+public enum FocusEdgeFeatherCurve {
+    public static let sampleFractions: [Double] = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    public static let maximumSpanRatio: Double = 0.28
+
+    public static func cosineWeight(_ t: Double) -> Double {
+        let clamped = min(max(t, 0.0), 1.0)
+        return (1.0 - cos(Double.pi * clamped)) * 0.5
+    }
+
+    public static func gradientStops(
+        feather: FocusEdgeFeather,
+        dimMenuBar: Bool,
+        mainRectHeight: CGFloat
+    ) -> [FocusEdgeFeatherStop] {
+        guard !dimMenuBar,
+              feather.featherPoints > 0,
+              mainRectHeight.isFinite,
+              mainRectHeight > 0 else {
+            return [
+                FocusEdgeFeatherStop(location: 0.0, opacityWeight: 1.0),
+                FocusEdgeFeatherStop(location: 1.0, opacityWeight: 1.0),
+            ]
+        }
+
+        let height = max(1.0, Double(mainRectHeight))
+        let span = min(Double(feather.featherPoints), height * maximumSpanRatio) / height
+        guard span > 0.0001 else {
+            return [
+                FocusEdgeFeatherStop(location: 0.0, opacityWeight: 1.0),
+                FocusEdgeFeatherStop(location: 1.0, opacityWeight: 1.0),
+            ]
+        }
+
+        var stops = sampleFractions.map { fraction in
+            FocusEdgeFeatherStop(
+                location: fraction * span,
+                opacityWeight: cosineWeight(fraction)
+            )
+        }
+        if span < 1.0 {
+            stops.append(FocusEdgeFeatherStop(location: 1.0, opacityWeight: 1.0))
+        }
+        return stops
+    }
+}
+
+public enum FocusTimingCurve: Equatable, Sendable {
+    case cubicBezier(c1x: Float, c1y: Float, c2x: Float, c2y: Float)
+    case linear
+    case easeInEaseOut
+}
+
+public enum FocusTransitionSpeed: String, CaseIterable, Identifiable, Codable, Sendable {
+    case softBreath
+    case slowLinear
+    case crispCurve
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .softBreath: "柔化呼吸"
+        case .slowLinear: "缓慢线性"
+        case .crispCurve: "轻快流畅"
+        }
+    }
+
+    public var subtitle: String {
+        switch self {
+        case .softBreath: "阻尼呼吸 · 0.52s"
+        case .slowLinear: "匀速渐变 · 0.80s"
+        case .crispCurve: "轻快平滑 · 0.24s"
+        }
+    }
+
+    public var menuTitle: String {
+        switch self {
+        case .softBreath: "柔化呼吸 · 0.52s（默认）"
+        case .slowLinear: "缓慢线性 · 0.80s"
+        case .crispCurve: "轻快流畅 · 0.24s"
+        }
+    }
+
+    public var fadeInDuration: Double {
+        switch self {
+        case .softBreath: 0.52
+        case .slowLinear: 0.80
+        case .crispCurve: 0.24
+        }
+    }
+
+    public var fadeOutDuration: Double {
+        switch self {
+        case .softBreath: 0.40
+        case .slowLinear: 0.62
+        case .crispCurve: 0.18
+        }
+    }
+
+    public var timingCurve: FocusTimingCurve {
+        switch self {
+        case .softBreath: .cubicBezier(c1x: 0.22, c1y: 1.0, c2x: 0.36, c2y: 1.0)
+        case .slowLinear: .linear
+        case .crispCurve: .easeInEaseOut
+        }
+    }
+
+    public func resolvedFadeInDuration(reduceMotion: Bool) -> Double {
+        reduceMotion ? 0.0 : fadeInDuration
+    }
+
+    public func resolvedFadeOutDuration(reduceMotion: Bool) -> Double {
+        reduceMotion ? 0.0 : fadeOutDuration
+    }
+
+    public static func fromStoredValue(_ rawValue: String?) -> FocusTransitionSpeed {
+        guard let rawValue else { return .softBreath }
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch trimmed {
+        case "gentle", "softBreath":
+            return .softBreath
+        case "slowLinear":
+            return .slowLinear
+        case "snappy", "instant", "crispCurve":
+            return .crispCurve
+        default:
+            return .softBreath
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try? container.decode(String.self)
+        self = Self.fromStoredValue(rawValue)
     }
 }
 

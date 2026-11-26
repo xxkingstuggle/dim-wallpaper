@@ -229,15 +229,22 @@ final class DimWallpaperCoreTests: XCTestCase {
         XCTAssertEqual(FocusPreset.matching(intensity: 0.85), .deep)
         XCTAssertNil(FocusPreset.matching(intensity: 0.55))
 
-        XCTAssertEqual(FocusTransitionSpeed.gentle.resolvedDuration(reduceMotion: false), 0.11, accuracy: 0.0001)
-        XCTAssertEqual(FocusTransitionSpeed.snappy.resolvedDuration(reduceMotion: false), 0.06, accuracy: 0.0001)
-        XCTAssertEqual(FocusTransitionSpeed.instant.resolvedDuration(reduceMotion: false), 0.0, accuracy: 0.0001)
-        XCTAssertEqual(FocusTransitionSpeed.gentle.resolvedDuration(reduceMotion: true), 0.0, accuracy: 0.0001)
-        XCTAssertEqual(FocusTransitionSpeed.snappy.resolvedDuration(reduceMotion: true), 0.0, accuracy: 0.0001)
-        XCTAssertEqual(FocusTransitionSpeed.gentle.resolvedManualDuration(reduceMotion: false), 0.07, accuracy: 0.0001)
-        XCTAssertEqual(FocusTransitionSpeed.snappy.resolvedManualDuration(reduceMotion: false), 0.06, accuracy: 0.0001)
-        XCTAssertEqual(FocusTransitionSpeed.instant.resolvedManualDuration(reduceMotion: false), 0.0, accuracy: 0.0001)
-        XCTAssertEqual(FocusTransitionSpeed.gentle.resolvedManualDuration(reduceMotion: true), 0.0, accuracy: 0.0001)
+        XCTAssertEqual(FocusTransitionSpeed.softBreath.resolvedFadeInDuration(reduceMotion: false), 0.52, accuracy: 0.0001)
+        XCTAssertEqual(FocusTransitionSpeed.softBreath.resolvedFadeOutDuration(reduceMotion: false), 0.40, accuracy: 0.0001)
+        XCTAssertEqual(
+            FocusTransitionSpeed.softBreath.timingCurve,
+            .cubicBezier(c1x: 0.22, c1y: 1.0, c2x: 0.36, c2y: 1.0)
+        )
+        XCTAssertEqual(FocusTransitionSpeed.slowLinear.resolvedFadeInDuration(reduceMotion: false), 0.80, accuracy: 0.0001)
+        XCTAssertEqual(FocusTransitionSpeed.slowLinear.resolvedFadeOutDuration(reduceMotion: false), 0.62, accuracy: 0.0001)
+        XCTAssertEqual(FocusTransitionSpeed.slowLinear.timingCurve, .linear)
+        XCTAssertEqual(FocusTransitionSpeed.crispCurve.resolvedFadeInDuration(reduceMotion: false), 0.24, accuracy: 0.0001)
+        XCTAssertEqual(FocusTransitionSpeed.crispCurve.resolvedFadeOutDuration(reduceMotion: false), 0.18, accuracy: 0.0001)
+        XCTAssertEqual(FocusTransitionSpeed.crispCurve.timingCurve, .easeInEaseOut)
+        for speed in FocusTransitionSpeed.allCases {
+            XCTAssertEqual(speed.resolvedFadeInDuration(reduceMotion: true), 0.0, accuracy: 0.0001)
+            XCTAssertEqual(speed.resolvedFadeOutDuration(reduceMotion: true), 0.0, accuracy: 0.0001)
+        }
 
         XCTAssertEqual(FocusSystemBarPreset.matching(dimMenuBar: false, dimDock: false), .keepSystemBars)
         XCTAssertEqual(FocusSystemBarPreset.matching(dimMenuBar: true, dimDock: true), .dimAll)
@@ -636,7 +643,8 @@ final class DimWallpaperCoreTests: XCTestCase {
         XCTAssertFalse(migrated.dimDock)
         XCTAssertEqual(migrated.focusMultiDisplayPolicy, .perDisplayFront)
         XCTAssertTrue(migrated.pauseFocusOnFullscreen)
-        XCTAssertEqual(migrated.focusTransitionSpeed, .snappy)
+        XCTAssertEqual(migrated.focusEdgeFeather, .soft)
+        XCTAssertEqual(migrated.focusTransitionSpeed, .softBreath)
         XCTAssertTrue(migrated.focusExcludedBundleIDs.isEmpty)
         XCTAssertTrue(migrated.focusHotKeyEnabled)
         XCTAssertEqual(migrated.focusHotKeyBinding, .defaultFocusToggle)
@@ -658,6 +666,8 @@ final class DimWallpaperCoreTests: XCTestCase {
         XCTAssertEqual(decodedLegacy.hotKeyBinding.displayLabel, "⌥⌘D")
         XCTAssertFalse(decodedLegacy.focusEnabled)
         XCTAssertEqual(decodedLegacy.focusIntensity, FocusBounds.defaultIntensity, accuracy: 0.0001)
+        XCTAssertEqual(decodedLegacy.focusEdgeFeather, .soft)
+        XCTAssertEqual(decodedLegacy.focusTransitionSpeed, .softBreath)
         XCTAssertEqual(decodedLegacy.focusHotKeyBinding, .defaultFocusToggle)
 
         let fullV2 = DimmingSnapshot(
@@ -675,7 +685,8 @@ final class DimWallpaperCoreTests: XCTestCase {
             dimMenuBar: true,
             dimDock: true,
             focusMultiDisplayPolicy: .activeScreenOnly,
-            focusTransitionSpeed: .snappy,
+            focusEdgeFeather: .subtle,
+            focusTransitionSpeed: .slowLinear,
             focusExcludedBundleIDs: ["  com.apple.finder  ", "", "com.apple.Preview"],
             focusHotKeyEnabled: false,
             focusHotKeyBinding: HotKeyBinding(keyCode: 5, modifiers: HotKeyBinding.controlMask | HotKeyBinding.commandMask)
@@ -689,7 +700,8 @@ final class DimWallpaperCoreTests: XCTestCase {
         XCTAssertTrue(reloadedV2.dimMenuBar)
         XCTAssertTrue(reloadedV2.dimDock)
         XCTAssertEqual(reloadedV2.focusMultiDisplayPolicy, .activeScreenOnly)
-        XCTAssertEqual(reloadedV2.focusTransitionSpeed, .snappy)
+        XCTAssertEqual(reloadedV2.focusEdgeFeather, .subtle)
+        XCTAssertEqual(reloadedV2.focusTransitionSpeed, .slowLinear)
         XCTAssertEqual(reloadedV2.focusExcludedBundleIDs, ["com.apple.finder", "com.apple.Preview"])
         XCTAssertFalse(reloadedV2.focusHotKeyEnabled)
         XCTAssertEqual(reloadedV2.focusHotKeyBinding.displayLabel, "⌃⌘G")
@@ -1391,6 +1403,111 @@ final class DimWallpaperCoreTests: XCTestCase {
         let decoded = try JSONDecoder().decode(DimmingSnapshot.self, from: legacyJSON)
         XCTAssertEqual(decoded.focusMultiDisplayPolicy, .perDisplayFront)
         XCTAssertTrue(decoded.pauseFocusOnFullscreen)
+    }
+
+    func testFocusEdgeFeatherCosineSmoothstepStopsAndDefaults() {
+        XCTAssertEqual(FocusEdgeFeather.fromStoredValue(nil), .soft)
+        XCTAssertEqual(FocusEdgeFeather.fromStoredValue("unknown"), .soft)
+        XCTAssertEqual(FocusEdgeFeather.soft.featherPoints, 38.0, accuracy: 0.0001)
+        XCTAssertEqual(FocusEdgeFeather.subtle.featherPoints, 18.0, accuracy: 0.0001)
+        XCTAssertEqual(FocusEdgeFeather.sharp.featherPoints, 0.0, accuracy: 0.0001)
+
+        let softStops = FocusEdgeFeatherCurve.gradientStops(
+            feather: .soft,
+            dimMenuBar: false,
+            mainRectHeight: 1000
+        )
+        XCTAssertEqual(softStops.count, 7)
+        XCTAssertEqual(softStops.first?.location ?? -1, 0.0, accuracy: 0.0001)
+        XCTAssertEqual(softStops.first?.opacityWeight ?? -1, 0.0, accuracy: 0.0001)
+        XCTAssertEqual(softStops[5].location, 0.038, accuracy: 0.0001)
+        XCTAssertEqual(softStops[5].opacityWeight, 1.0, accuracy: 0.0001)
+        XCTAssertEqual(softStops.last?.location ?? -1, 1.0, accuracy: 0.0001)
+        XCTAssertEqual(softStops.last?.opacityWeight ?? -1, 1.0, accuracy: 0.0001)
+
+        // Cosine smoothstep is strictly monotonic on the feather ramp and symmetric around 0.5
+        for index in 1..<6 {
+            XCTAssertGreaterThan(softStops[index].location, softStops[index - 1].location)
+            XCTAssertGreaterThan(softStops[index].opacityWeight, softStops[index - 1].opacityWeight)
+        }
+        XCTAssertEqual(softStops[1].opacityWeight + softStops[4].opacityWeight, 1.0, accuracy: 0.0001)
+        XCTAssertEqual(softStops[2].opacityWeight + softStops[3].opacityWeight, 1.0, accuracy: 0.0001)
+
+        // Short window clamps span to 28% of height
+        let shortStops = FocusEdgeFeatherCurve.gradientStops(
+            feather: .soft,
+            dimMenuBar: false,
+            mainRectHeight: 100
+        )
+        XCTAssertEqual(shortStops[5].location, 0.28, accuracy: 0.0001)
+
+        // When dimMenuBar == true or feather == .sharp, returns uniform solid [1.0, 1.0]
+        let dimmedMenuBarStops = FocusEdgeFeatherCurve.gradientStops(
+            feather: .soft,
+            dimMenuBar: true,
+            mainRectHeight: 1000
+        )
+        XCTAssertEqual(dimmedMenuBarStops, [
+            FocusEdgeFeatherStop(location: 0.0, opacityWeight: 1.0),
+            FocusEdgeFeatherStop(location: 1.0, opacityWeight: 1.0),
+        ])
+
+        let sharpStops = FocusEdgeFeatherCurve.gradientStops(
+            feather: .sharp,
+            dimMenuBar: false,
+            mainRectHeight: 1000
+        )
+        XCTAssertEqual(sharpStops, [
+            FocusEdgeFeatherStop(location: 0.0, opacityWeight: 1.0),
+            FocusEdgeFeatherStop(location: 1.0, opacityWeight: 1.0),
+        ])
+    }
+
+    func testLegacyFocusTransitionSpeedMigrationAndEdgeFeatherPersistence() throws {
+        let suiteName = "local.zjx.DimWallpaper.LegacyTransitionMigration.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = PreferencesStore(userDefaults: defaults, suiteName: suiteName)
+
+        // "gentle" -> .softBreath (persisted back cleanly)
+        defaults.set("gentle", forKey: PreferenceKey.focusTransitionSpeed)
+        let fromGentle = store.load()
+        XCTAssertEqual(fromGentle.focusTransitionSpeed, .softBreath)
+        XCTAssertEqual(fromGentle.focusEdgeFeather, .soft)
+        XCTAssertEqual(defaults.string(forKey: PreferenceKey.focusTransitionSpeed), FocusTransitionSpeed.softBreath.rawValue)
+
+        // "snappy" and "instant" -> .crispCurve
+        defaults.set("snappy", forKey: PreferenceKey.focusTransitionSpeed)
+        XCTAssertEqual(store.load().focusTransitionSpeed, .crispCurve)
+        XCTAssertEqual(defaults.string(forKey: PreferenceKey.focusTransitionSpeed), FocusTransitionSpeed.crispCurve.rawValue)
+
+        defaults.set("instant", forKey: PreferenceKey.focusTransitionSpeed)
+        XCTAssertEqual(store.load().focusTransitionSpeed, .crispCurve)
+
+        // Explicit .slowLinear and .sharp persist round-trip
+        var snapshot = store.load()
+        snapshot.focusTransitionSpeed = .slowLinear
+        snapshot.focusEdgeFeather = .sharp
+        store.save(snapshot)
+        let reloaded = store.load()
+        XCTAssertEqual(reloaded.focusTransitionSpeed, .slowLinear)
+        XCTAssertEqual(reloaded.focusEdgeFeather, .sharp)
+
+        // Codable JSON migration for legacy transition values
+        let gentleJSON = Data("{\"focusTransitionSpeed\":\"gentle\"}".utf8)
+        let decodedGentle = try JSONDecoder().decode(DimmingSnapshot.self, from: gentleJSON)
+        XCTAssertEqual(decodedGentle.focusTransitionSpeed, .softBreath)
+        XCTAssertEqual(decodedGentle.focusEdgeFeather, .soft)
+
+        let snappyJSON = Data("{\"focusTransitionSpeed\":\"snappy\",\"focusEdgeFeather\":\"subtle\"}".utf8)
+        let decodedSnappy = try JSONDecoder().decode(DimmingSnapshot.self, from: snappyJSON)
+        XCTAssertEqual(decodedSnappy.focusTransitionSpeed, .crispCurve)
+        XCTAssertEqual(decodedSnappy.focusEdgeFeather, .subtle)
+
+        // CLI override parses --focus-feather
+        let cli = LaunchOptions.parse(arguments: ["DimWallpaper", "--focus-feather=subtle"])
+        XCTAssertEqual(cli.focusEdgeFeatherOverride, .subtle)
     }
 
     private func assertPartitionDisjoint(

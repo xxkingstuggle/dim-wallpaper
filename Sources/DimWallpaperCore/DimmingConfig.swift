@@ -185,6 +185,7 @@ public struct LaunchOptions: Equatable, Sendable {
     public var focusScopeOverride: FocusScope?
     public var focusMultiDisplayPolicyOverride: FocusMultiDisplayPolicy?
     public var pauseFocusOnFullscreenOverride: Bool?
+    public var focusEdgeFeatherOverride: FocusEdgeFeather?
 
     public init(
         printStatus: Bool = false,
@@ -198,7 +199,8 @@ public struct LaunchOptions: Equatable, Sendable {
         dimDockOverride: Bool? = nil,
         focusScopeOverride: FocusScope? = nil,
         focusMultiDisplayPolicyOverride: FocusMultiDisplayPolicy? = nil,
-        pauseFocusOnFullscreenOverride: Bool? = nil
+        pauseFocusOnFullscreenOverride: Bool? = nil,
+        focusEdgeFeatherOverride: FocusEdgeFeather? = nil
     ) {
         self.printStatus = printStatus
         self.printStatusJSON = printStatusJSON
@@ -212,6 +214,7 @@ public struct LaunchOptions: Equatable, Sendable {
         self.focusScopeOverride = focusScopeOverride
         self.focusMultiDisplayPolicyOverride = focusMultiDisplayPolicyOverride
         self.pauseFocusOnFullscreenOverride = pauseFocusOnFullscreenOverride
+        self.focusEdgeFeatherOverride = focusEdgeFeatherOverride
     }
 
     public var hasFocusOverrides: Bool {
@@ -222,6 +225,7 @@ public struct LaunchOptions: Equatable, Sendable {
             || focusScopeOverride != nil
             || focusMultiDisplayPolicyOverride != nil
             || pauseFocusOnFullscreenOverride != nil
+            || focusEdgeFeatherOverride != nil
     }
 
     public func applyingOverrides(to snapshot: DimmingSnapshot) -> DimmingSnapshot {
@@ -246,6 +250,9 @@ public struct LaunchOptions: Equatable, Sendable {
         }
         if let pauseFocusOnFullscreenOverride {
             updated.pauseFocusOnFullscreen = pauseFocusOnFullscreenOverride
+        }
+        if let focusEdgeFeatherOverride {
+            updated.focusEdgeFeather = focusEdgeFeatherOverride
         }
         return updated
     }
@@ -308,6 +315,10 @@ public struct LaunchOptions: Equatable, Sendable {
                 if let rawValue = nextValue(after: &index, in: arguments), let parsed = parseBool(rawValue) {
                     options.pauseFocusOnFullscreenOverride = parsed
                 }
+            case "--focus-feather":
+                if let rawValue = nextValue(after: &index, in: arguments) {
+                    options.focusEdgeFeatherOverride = FocusEdgeFeather.fromStoredValue(rawValue)
+                }
             default:
                 if argument.hasPrefix("--defaults-suite=") {
                     let candidate = String(argument.dropFirst("--defaults-suite=".count))
@@ -349,6 +360,9 @@ public struct LaunchOptions: Equatable, Sendable {
                     if let parsed = parseBool(raw) {
                         options.pauseFocusOnFullscreenOverride = parsed
                     }
+                } else if argument.hasPrefix("--focus-feather=") {
+                    let raw = String(argument.dropFirst("--focus-feather=".count))
+                    options.focusEdgeFeatherOverride = FocusEdgeFeather.fromStoredValue(raw)
                 }
             }
             index += 1
